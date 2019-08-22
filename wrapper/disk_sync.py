@@ -344,7 +344,7 @@ def get_nbdkit_cmd(disk, key):
     state = State().instance
     logging.debug('Generating nbdkit command')
 
-    env = 'LD_LIBRARY_PATH=%s' % VDDK_LIBDIR
+    env = 'LD_LIBRARY_PATH=%s/lib64' % VDDK_LIBDIR
     if 'LD_LIBRARY_PATH' in os.environ:
         env += ':' + os.environ['LD_LIBRARY_PATH']
 
