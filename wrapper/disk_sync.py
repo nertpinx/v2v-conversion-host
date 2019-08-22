@@ -445,7 +445,7 @@ def sync_data():
         for extent in state['internal']['disk_extents'][key]:
             # Skip over extents smaller than 1MB
             if extent.length < 1 << 20:
-                logging.debug('Skibbing block status for extent of size %d B at offset %d B' %
+                logging.debug('Skipping block status for extent of size %d B at offset %d B' %
                               (extent.length, extent.start))
                 data_blocks.append({
                     'offset': extent.start,
