@@ -4,6 +4,8 @@ from pyVmomi import vim
 from pyVim.connect import SmartConnect, Disconnect
 from pyVim.task import WaitForTask
 
+from packaging import version
+
 import nbd
 
 from six.moves.urllib.parse import urlparse, unquote
@@ -14,6 +16,8 @@ import logging
 import ssl
 import sys
 import json
+
+NBD_MIN_VERSION = version.parse("0.9.8")
 
 LOG_FORMAT_TIME = '[%(asctime)s] '
 LOG_FORMAT_MSG = ': %(message)s'
@@ -582,6 +586,13 @@ def main():
     '''TODO: Add some description here '''
 
     args = parse_args()
+
+    nbd_version = version.parse(nbd.NBD().get_version())
+    if nbd_version < NBD_MIN_VERSION:
+        logging.error("version on libnbd is too old.  Version found = %s.  Min version required = %s" %
+                      (nbd_version, NBD_MIN_VERSION))
+        sys.exit(1)
+
     state = State(args).instance
     validate_state(args.sync_type)
     parse_input(args)
