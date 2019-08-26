@@ -610,17 +610,16 @@ def main():
 
     args = parse_args()
 
-    nbd_version = version.parse(nbd.NBD().get_version())
-    if nbd_version < NBD_MIN_VERSION:
-        logging.error("version on libnbd is too old.  Version found = %s.  Min version required = %s" %
-                      (nbd_version, NBD_MIN_VERSION))
-        sys.exit(1)
-
     state = State(args).instance
     validate_state(args.sync_type)
     parse_input(args)
     log_config(filename=state.get('logfile'),
                level=getattr(logging, state['loglevel']))
+
+    nbd_version = version.parse(nbd.NBD().get_version())
+    if nbd_version < NBD_MIN_VERSION:
+        error("version on libnbd is too old.  Version found = %s.  Min version required = %s" %
+              (nbd_version, NBD_MIN_VERSION))
 
     logging.info('Connecting')
 
