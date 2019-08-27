@@ -152,7 +152,7 @@ class BaseHost(object):
 
     def validate_data(self, data):
         """ Validate input data, fill in defaults, etc """
-        hard_error("Cannot validate data for uknown host type")
+        hard_error("Cannot validate data for unknown host type")
 #
 #  }}}
 #
@@ -2106,7 +2106,7 @@ def main():
     host_type = BaseHost.detect(data)
     host = BaseHost.factory(host_type)
 
-    # The logging is delayed after we now which user runs the wrapper.
+    # The logging is delayed until we know which user runs the wrapper.
     # Otherwise we would have two logs.
     log_tag = host.get_tag()
     log_dirs = host.get_logs()
