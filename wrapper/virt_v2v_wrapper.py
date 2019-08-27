@@ -246,6 +246,9 @@ class CNVHost(BaseHost):
         """ Validate input data, fill in defaults, etc """
         # No libvirt inside the POD, enforce direct backend
         data['backend'] = 'direct'
+        # Disallow warm migration for now
+        if data['warm']:
+            hard_error('Warm migration not supported for OSP yet')
         return data
 
 
@@ -523,6 +526,9 @@ class OSPHost(BaseHost):
         """ Validate input data, fill in defaults, etc """
         # Enforce direct backend
         data['backend'] = 'direct'
+        # Disallow warm migration for now
+        if data['warm']:
+            hard_error('Warm migration not supported for OSP yet')
         # Check necessary keys
         for k in [
                 'osp_destination_project_id',
@@ -821,6 +827,11 @@ class VDSMHost(BaseHost):
                            data['output_format'])
         else:
             data['output_format'] = 'raw'
+
+        # Warm migration only supported with raw disks currently
+        if data['warm']:
+            if data['transport_method'] != 'vddk':
+                hard_error('Warm migration only supported with vddk transport')
 
         # Targets (only export domain for now)
         if 'rhv_url' in data:
@@ -2185,6 +2196,10 @@ def main():
             host.check_install_drivers(data)
         else:
             data['install_drivers'] = False
+
+        # Default to cold migration
+        if 'warm' not in data:
+            data['warm'] = False
 
         # Method dependent validation
         data = host.validate_data(data)

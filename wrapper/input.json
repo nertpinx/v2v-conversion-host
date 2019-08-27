@@ -1,0 +1,9 @@
+{
+    "loglevel": "DEBUG",
+    "pwdfile": "/home/nert/pwd2",
+    "statefile": "state.json",
+    "vm_name": "hriprdweb002",
+    "vmware_fingerprint": "D3:47:18:B1:11:39:87:25:F4:52:B2:04:EC:85:88:FA:9D:78:73:11",
+    "vmware_uri": "esx://root@10.19.2.12/?no_verify=1",
+    "insecure_connection": true
+}

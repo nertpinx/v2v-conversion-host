@@ -1,0 +1,9 @@
+{
+    "loglevel": "DEBUG",
+    "pwdfile": "/home/nert/pwd",
+    "statefile": "state.json",
+    "vm_name": "Fedora 29",
+    "vmware_fingerprint": "E2:DC:D3:19:74:D2:58:3A:5C:22:76:00:24:3E:92:42:0E:A7:2F:4D",
+    "vmware_uri": "vpx://mkletzan%40vsphere.local@ptoscano-vcsa.tpb.lab.eng.brq.redhat.com:443/?no_verify=1",
+    "insecure_connection": true
+}
