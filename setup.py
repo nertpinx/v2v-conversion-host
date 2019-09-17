@@ -27,6 +27,7 @@ setup(
     ],
     extras_require={
         'ovirt': 'ovirt-engine-sdk-python',
+        'warm': 'libvirt-python',
     },
     # tests_require=['tox'],
     classifiers=[

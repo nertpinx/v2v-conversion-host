@@ -199,6 +199,8 @@ class CNVHost(BaseHost):
 
     def validate_data(self, data):
         """ Validate input data, fill in defaults, etc """
+        if 'warm' in data:
+            hard_error("Warm conversion not supported for CNV host")
         # No libvirt inside the POD, enforce direct backend
         data['backend'] = 'direct'
         return data
@@ -509,6 +511,8 @@ class OSPHost(BaseHost):
 
     def validate_data(self, data):
         """ Validate input data, fill in defaults, etc """
+        if 'warm' in data:
+            hard_error("Warm conversion not supported for OSP host")
         # Enforce direct backend
         data['backend'] = 'direct'
         # Check necessary keys
@@ -809,6 +813,8 @@ class VDSMHost(BaseHost):
 
     def validate_data(self, data):
         """ Validate input data, fill in defaults, etc """
+        if 'warm' in data:
+            hard_error("Warm conversion not supported for VDSM host")
         # Determine whether direct backend is required
         direct_backend = DIRECT_BACKEND
         if 'export_domain' in data:

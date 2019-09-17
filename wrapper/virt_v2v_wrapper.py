@@ -95,7 +95,6 @@ def prepare_command(data, v2v_caps, agent_sock=None):
     state = State().instance
     v2v_args = [
         '-v', '-x',
-        data['vm_name'],
         '--root', 'first',
         '--machine-readable=file:{}'.format(state.machine_readable_log),
     ]
@@ -108,12 +107,26 @@ def prepare_command(data, v2v_caps, agent_sock=None):
             '-io', 'vddk-libdir=%s' % '/opt/vmware-vix-disklib-distrib',
             '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
             '--password-file', data['vmware_password_file'],
+            data['vm_name'],
             ])
     elif data['transport_method'] == 'ssh':
         v2v_args.extend([
             '-i', 'vmx',
             '-it', 'ssh',
+            data['vm_name'],
             ])
+    elif data['transport_method'] == 'local':
+        v2v_args.extend([
+            '-i', 'libvirtxml',
+            data['vm_xml'],
+            ])
+
+    if data['warm']:
+        if data['transport-method'] == 'local':
+            v2v_args.append('--in-place')
+        else:
+            v2v_args.append('--no-copy')
+
 
     if 'network_mappings' in data:
         for mapping in data['network_mappings']:
@@ -233,6 +246,11 @@ def throttling_update(runner, initial=None):
             logging.debug('Ignoring unknown throttling request: %s', k)
     state['throttling'].update(processed)
     logging.info('New throttling setup: %r', state['throttling'])
+
+
+def pre_copy(host, data):
+
+    print("asdf")
 
 
 def wrapper(host, data, v2v_caps, agent_sock=None):
@@ -566,7 +584,22 @@ def main():
                     data, host.get_uid(), host.get_gid())
                 if agent_pid is None:
                     raise RuntimeError('Failed to start ssh-agent')
-            wrapper(host, data, virt_v2v_caps, agent_sock)
+
+            # For warm migrations start pre-copying the disks
+            if data['warm']:
+                v2v_data = pre_copy(host, data)
+
+            # Execute the migration the same way every time (during warm
+            # migration this step should run virt-v2v with `--no-copy`)
+            wrapper(host, v2v_data, virt_v2v_caps, agent_sock)
+
+            # For warm migration virt-v2v needs to be ran again, but this time
+            # with different input, `--in-place` and local disks.
+            if data['warm']:
+                data['transport_method'] = 'local'
+                wrapper(host, v2v_data, virt_v2v_caps, agent_sock)
+                v2v_data = pre_copy(host, data)
+
             if agent_pid is not None:
                 os.kill(agent_pid, signal.SIGTERM)
             if not state.get('failed', False):
