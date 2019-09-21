@@ -861,12 +861,12 @@ class VDSMHost(BaseHost):
                 'SSL verification is disabled for oVirt SDK connections')
 
         if 'rhv_url' in data:
-            if 'allocation' not in data:
-                # Check storage domain type and decide on suitable allocation type
-                # Note: This is only temporary. We should get the info from the
-                # caller in the future.
-                domain_type = None
-                with self.sdk_connection(data) as c:
+            with self.sdk_connection(data) as c:
+                if 'allocation' not in data:
+                    # Check storage domain type and decide on suitable allocation type
+                    # Note: This is only temporary. We should get the info from the
+                    # caller in the future.
+                    domain_type = None
                     service = c.system_service().storage_domains_service()
                     domains = service.list(search='name="%s"' %
                                            str(data['rhv_storage']))
@@ -874,13 +874,13 @@ class VDSMHost(BaseHost):
                         hard_error('Found %d domains matching "%s"!' %
                                    (len(domains), data['rhv_storage']))
                     domain_type = domains[0].storage.type
-                logging.info('Storage domain "%s" is of type %r',
-                             data['rhv_storage'], domain_type)
-                data['allocation'] = 'sparse'
-                if domain_type in self.PREALLOCATED_STORAGE_TYPES:
-                    data['allocation'] = 'preallocated'
-                logging.info('... selected allocation type is %s',
-                             data['allocation'])
+                    logging.info('Storage domain "%s" is of type %r',
+                                 data['rhv_storage'], domain_type)
+                    data['allocation'] = 'sparse'
+                    if domain_type in self.PREALLOCATED_STORAGE_TYPES:
+                        data['allocation'] = 'preallocated'
+                    logging.info('... selected allocation type is %s',
+                                 data['allocation'])
 
         return data
 
