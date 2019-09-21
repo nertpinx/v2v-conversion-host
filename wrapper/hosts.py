@@ -201,6 +201,8 @@ class CNVHost(BaseHost):
         """ Validate input data, fill in defaults, etc """
         # No libvirt inside the POD, enforce direct backend
         data['backend'] = 'direct'
+        if data['two_phase']:
+            hard_error('Two-phase conversion is not supported for CNV host')
         return data
 
 
@@ -537,6 +539,8 @@ class OSPHost(BaseHost):
         for mapping in data['network_mappings']:
             if 'mac_address' not in mapping:
                 hard_error('Missing mac address in one of network mappings')
+        if data['two_phase']:
+            hard_error('Two-phase conversion is not supported for CNV host')
         return data
 
     def _check_ip_in_network(self, ipaddr, network):
@@ -845,6 +849,9 @@ class VDSMHost(BaseHost):
             pass
         else:
             hard_error('No target specified')
+
+        if data['two_phase']:
+            hard_error('Two-phase conversion is not supported for CNV host')
 
         # Insecure connection
         if 'insecure_connection' not in data:

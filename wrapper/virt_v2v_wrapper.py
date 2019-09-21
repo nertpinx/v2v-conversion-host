@@ -474,6 +474,15 @@ def main():
         else:
             data['install_drivers'] = False
 
+        if 'warm' not in data:
+            data['warm'] = False
+        if 'two_phase'not in data:
+            data['two_phase'] = bool(data['warm'])
+
+        if data['warm'] and not data['two_phase']:
+            hard_error('Warm conversion requires also two-phase conversion ' +
+                       'and cannot be performed without it')
+
         # Method dependent validation
         data = host.validate_data(data)
 
