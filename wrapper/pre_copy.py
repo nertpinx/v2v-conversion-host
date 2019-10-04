@@ -17,7 +17,7 @@ from pyVim.connect import SmartConnect  # , Disconnect
 from six.moves.urllib.parse import urlparse, unquote
 
 from .singleton import State
-
+from .common import error
 
 MAX_BLOCK_STATUS_LEN = 2 << 30  # 2GB (4GB requests fail over the 32b protocol)
 MAX_PREAD_LEN = 23 << 20  # 23MB (24M requests fail in vddk)
@@ -29,6 +29,12 @@ NBD_MIN_VERSION = version.parse("0.9.8")
 # - use members instead of state['internal']
 # - __init__() instead of prepare, etc.
 
+if six.PY2:
+    DEVNULL = open(os.devnull, 'r+')
+else:
+    xrange = range
+    DEVNULL = subprocess.DEVNULL
+
 _nbd_version = version.parse(nbd.NBD().get_version())
 if _nbd_version < NBD_MIN_VERSION:
     raise RuntimeError("version on libnbd is too old.  Version found = %s.  Min version required = %s" %
@@ -38,15 +44,15 @@ if _nbd_version < NBD_MIN_VERSION:
 def prepare(data):
     state = State().instance
 
-    logging.debug('Parsing URI: %s' % data['vmware_uri'])
+    logging.debug('Parsing URI: %s', data['vmware_uri'])
     uri = urlparse(data['vmware_uri'])
-    logging.debug('Parsed URI as %s' % (uri,))
+    logging.debug('Parsed URI as %s', uri)
 
-    state['internal']['pre_copy'] = {
+    state['internal']['pre_copy'].update({
         'server': uri.hostname,
         'user': 'administrator@vsphere.local',
         'port': uri.port,
-    }
+    })
     if uri.username:
         state['internal']['pre_copy']['user'] = unquote(uri.username)
     if data['two_phase']:
@@ -78,38 +84,38 @@ def _connect(data):
     if state['internal']['pre_copy']['port'] is not None:
         args['port'] = state['internal']['pre_copy']['port']
 
-    logging.debug('Connecting to server %s as user %s' %
-                  (args['host'], args['user']))
+    logging.debug('Connecting to server %s as user %s',
+                  args['host'], args['user'])
     state['internal']['pre_copy']['conn'] = SmartConnect(**args)
     logging.debug('Connected to server')
 
 
 def get_vm(data):
     state = State().instance
-    logging.debug('Looking for VM %s' % data['vm_name'])
+    logging.debug('Looking for VM %s', data['vm_name'])
     content = state['internal']['pre_copy']['conn'].content
 
     view = content.viewManager.CreateContainerView(content.rootFolder,
                                                    [vim.VirtualMachine],
                                                    recursive=True)
-    logging.debug('Finding the VM in list of %d records' % len(view.view))
+    logging.debug('Finding the VM in list of %d records', len(view.view))
     vms = [vm for vm in view.view if vm.name == data['vm_name']]
     if len(vms) > 1:
         raise RuntimeError('Multiple VMs with the name %s' % data['vm_name'])
     if len(vms) != 1:
         raise RuntimeError('Could not find VM with name %s' % data['vm_name'])
 
-    logging.debug('Found VM %s: %s' % (data['vm_name'], vms[0]))
+    logging.debug('Found VM %s: %s', data['vm_name'], vms[0])
     state['internal']['pre_copy']['vm'] = vms[0]
 
 
 def get_disks_from_config(config):
     def diskname(disk):
-        return '"%s"(key=%s)' % (disk.deviceInfo.label, disk.key)
+        return '%s (key=%s)' % (disk.deviceInfo.label, disk.key)
     disks = [x for x in config.hardware.device
              if isinstance(x, vim.vm.device.VirtualDisk)]
-    logging.debug('Disks found: %d: %s' %
-                  (len(disks), ', '.join([diskname(d) for d in disks])))
+    logging.debug('Disks found: %d: %s',
+                  len(disks), ', '.join([diskname(d) for d in disks]))
     return disks
 
 
@@ -137,48 +143,57 @@ def validate():
         raise RuntimeError('VM must not have any previous snapshots.')
 
 
-def get_nbdkit_cmd(data, disk_key, disk):
+def get_nbdkit_cmd(data, sock_path, pidfile_path, disk):
     state = State().instance
 
     env = 'LD_LIBRARY_PATH=/opt/vmware-vix-disklib-distrib/lib64'
     if 'LD_LIBRARY_PATH' in os.environ:
         env += ':' + os.environ['LD_LIBRARY_PATH']
 
-    if data['two_phase']:
-        nbdkit_cmd = [
-            'env',
-            env,
-            'nbdkit',
-            '-s',
-            '-U',
-            os.path.join(
-                state['internal']['pre_copy']['socketdir'],
-                'nbdkit-%s.sock' % disk_key
-            ),
-            '--exit-with-parent',
-            '--readonly',
-            '--exportname=/',
-            '--filter=cacheextents',
-            'vddk',
-            'vm=moref=' + state['internal']['pre_copy']['vm']._moId,
-            'server=%s' % state['internal']['pre_copy']['server'],
-            'thumbprint=%s' % data['vmware_fingerprint'],
-            'password=+%s' % data['vmware_password_file'],
-            'libdir=%s' % '/opt/vmware-vix-disklib-distrib/lib64',
-            'file=%s' % disk['path'],
-        ]
-        if 'user' in state['internal']['pre_copy']:
-            nbdkit_cmd.append('user=%s' % state['internal']['pre_copy']['user'])
+    nbdkit_cmd = [
+        'env',
+        env,
+        'nbdkit',
+        '-U', sock_path,
+        '-P', pidfile_path,
+        '--exit-with-parent',
+        '--readonly',
+        '--foreground',
+        '--exportname=/',
+        '--filter=log',
+        '--filter=cacheextents',
+        'vddk',
+        'vm=moref=' + state['internal']['pre_copy']['vm']._moId,
+        'server=%s' % state['internal']['pre_copy']['server'],
+        'thumbprint=%s' % data['vmware_fingerprint'],
+        'password=+%s' % data['vmware_password_file'],
+        'libdir=%s' % '/opt/vmware-vix-disklib-distrib/lib64',
+        'file=%s' % disk['path'],
+        'logfile=/dev/stdout',
+    ]
+    if 'user' in state['internal']['pre_copy']:
+        nbdkit_cmd.append('user=%s' % state['internal']['pre_copy']['user'])
+
+    return nbdkit_cmd
 
 
 def start_nbdkits(data):
     state = State().instance
+    tempdir = state['internal']['pre_copy']['tempdir']
+    logdir = state['internal']['pre_copy']['logdir']
     for disk_key, disk in six.iteritems(state['pre_copy']['disks']):
+        sock_path = os.path.join(tempdir, 'nbdkit-%s.sock' % disk_key)
+        log_path = os.path.join(logdir, 'nbdkit-%s.log' % disk_key)
+        pidfile_path = os.path.join(logdir, 'nbdkit-%s.pid' % disk_key)
         disk_internal = state['internal']['pre_copy']['disks'][disk_key]
-        cmd, sock = get_nbdkit_cmd(data, disk_key, disk)
-        disk_internal['nbdkit_sock'] = sock
-        # TODO: Setup logs
-        proc = subprocess.Popen(cmd)
+        disk_internal['nbdkit_sock'] = sock_path
+        cmd = get_nbdkit_cmd(data, sock_path, pidfile_path, disk)
+        logging.debug('Starting nbdkit: %s', cmd)
+        with open(log_path, 'w') as logfile:
+            proc = subprocess.Popen(cmd,
+                                    stdout=logfile,
+                                    stderr=subprocess.STDOUT,
+                                    stdin=DEVNULL)
         disk_internal['nbdkit_process'] = proc
 
 
@@ -189,7 +204,7 @@ def get_domxml(data):
         libvirt.VIR_CRED_PASSPHRASE: data['vmware_password'],
     }
 
-    def auth_cb(cred, auth_creds):
+    def auth_cb(cred, _):
         for c in cred:
             val = auth_creds.get(c[0], None)
             if val is None:
@@ -197,28 +212,37 @@ def get_domxml(data):
             c[4] = val
         return 0
     conn = libvirt.openAuth(data['vmware_uri'],
-                            [auth_creds.keys(), auth_cb, auth_creds])
+                            [list(auth_creds.keys()), auth_cb, None])
     return conn.lookupByName(data['vm_name']).XMLDesc()
 
 
 def fix_disks(domxml, disk_map):
+    logging.debug('Trying to fix the domain XML to point to local devices')
+    logging.debug('Using disk map %s', disk_map)
     tree = ETree.fromstring(domxml)
     for disk in tree.find('devices').findall('disk'):
+        logging.debug('Trying to fixup `%s`', ETree.tostring(disk))
         src = disk.find('source')
         if src is None:
             continue
-        if src.attrib['path'] not in disk_map.keys():
+        path = src.get('file')
+        if path is None:
             continue
+        if path not in disk_map:
+            continue
+        dm = disk_map[path]
         disk.set('type', 'block')
-        del src.attrib['path']
-        src.set('dev', disk_map[src.attrib['path']]['path'])
+        logging.debug('Changing path `%s` to device `%s` in domain XML',
+                      path, dm['path'])
+        del src.attrib['file']
+        src.set('dev', dm['path'])
+        dm['fixed'] = True
 
     # Check that all paths were changed
-    for k, v in six.iteritems(disk_map.keys):
+    for k, v in six.iteritems(disk_map):
         if not v['fixed']:
             raise RuntimeError('Disk path `%s` was not fixed in the domxml' % k)
-
-    return ETree.tostring(domxml)
+    return ETree.tostring(tree)
 
 
 def prepare_libvirtxml(data, host):
@@ -232,7 +256,7 @@ def prepare_libvirtxml(data, host):
     disk_map = dict(zip(source_disk_paths, target_objects))
     domxml = get_domxml(data)
     domxml = fix_disks(domxml, disk_map)
-    with open(state['internal']['pre_copy']['libvirtxml']) as xmlfile:
+    with open(state['internal']['pre_copy']['libvirtxml'], 'wb') as xmlfile:
         xmlfile.write(domxml)
 
 
@@ -697,9 +721,15 @@ def actually_sync_disks_but_first_please_rename_and_implement_me():
 
 def qemu_img_convert(data):
     state = State().instance
-    for disk in state['internal']['pre_copy']['disks'].values():
-        subprocess.check_output(['qemu-img', 'convert',
-                                 '-f', 'raw',
-                                 nbd_uri_from_socket(disk['nbdkit_sock']),
-                                 '-O', data['output_format'],
-                                 disk['local_path']])
+    try:
+        for disk in state['internal']['pre_copy']['disks'].values():
+            proc = subprocess.check_output(['qemu-img', 'convert',
+                                            '-f', 'raw',
+                                            nbd_uri_from_socket(disk['nbdkit_sock']),
+                                            '-O', data['output_format'],
+                                            disk['local_path']],
+                                           stderr=subprocess.STDOUT,
+                                           universal_newlines=True)
+    except subprocess.CalledProcessError as e:
+        error('qemu-img failed with: %s' % e.output, exception=True)
+        raise

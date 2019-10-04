@@ -682,9 +682,11 @@ class VDSMHost(BaseHost):
             elif data['output_format'] == 'qcow2':
                 disk_format = self.sdk.types.DiskFormat.COW
 
-            for i, disk_data in enumerate(disks.values()):
+            for i, (disk_key, disk_data) in enumerate(disks.items()):
+                name = '%s-%03d' % (data['vm_name'], i)
+                logging.debug('Creating disk #%d: `%s`' % (i, name))
                 disk = self.sdk.types.Disk(
-                    name='%s-%03d' % (data['vm_name'], i),
+                    name=name,
                     description='Created by virt-v2v-wrapper during pre_copy phase',
                     format=disk_format,
                     initial_size=disk_data['size'],
@@ -698,7 +700,7 @@ class VDSMHost(BaseHost):
                 # Adding it here so that it gets tried to be cleaned up even if
                 # the timeout is reached
                 d = disk.get()
-                self._created_disks[d.id] = d
+                self._created_disks[d.id] = {'obj': d, 'src_key': disk_key}
                 status = None
                 for _ in range(20):
                     status = disk.get().status
@@ -714,9 +716,11 @@ class VDSMHost(BaseHost):
             system_service = conn.system_service()
             vm = system_service.vms_service().vm_service(vm_id)
             ds = system_service.disks_service()
-            self._delete_disks(ds, self._created_disks.keys())
+            self._delete_disks(ds, list(self._created_disks))
+
 
     def attach_disks(self, data):
+        state = State().instance
         vm_id = str(data['rhv_server_id'])
         with self.sdk_connection(data) as conn:
             system_service = conn.system_service()
@@ -724,49 +728,63 @@ class VDSMHost(BaseHost):
             ds = system_service.disks_service()
             das = vm.disk_attachments_service()
             desc = "Temporary attachment for pre_copy of VM %s" % data['vm_name']
-            for disk_id, disk in six.iteritems(self._created_disks):
+            for k, v in six.iteritems(self._created_disks):
+                logging.debug('Attaching disk id=%s' % k)
                 disk_att = das.add(
                     self.sdk.types.DiskAttachment(
                         active=True,
                         bootable=False,
                         description=desc,
-                        disk=disk,
+                        disk=v['obj'],
                         vm=vm.get(),
                         interface=self.sdk.types.DiskInterface.VIRTIO))
-                disk_att = das.attachment_service(disk_att.id)
+                disk_att = das.attachment_service(disk_att.id).get()
                 # This double getting is here to "guarantee" that it exists
-                # Also we keep the object to interact with it later
-                self._attached_disks[disk_att.get().id] = disk_att
+                self._attached_disks[disk_att.id] = disk_att
+                disks_internal = state['internal']['pre_copy']['disks']
+                disk_internal = disks_internal[v['src_key']]
+                local_path = '/dev/disk/by-id/virtio-%s' % disk_att.id[:20]
+                disk_internal['local_path'] = local_path
 
     def detach_disks(self, data):
         vm_id = str(data['rhv_server_id'])
-        att_ids = self._attached_disks.keys()
         with self.sdk_connection(data) as conn:
             system_service = conn.system_service()
             vm = system_service.vms_service().vm_service(vm_id)
             das = vm.disk_attachments_service()
-            while len(att_ids) > 0:
-                for att_id in att_ids[:]:
+            while len(self._attached_disks) > 0:
+                # list() makes sure we copy, we cannot use [:] because it is an
+                # OrderedDict
+                for att_id in list(self._attached_disks):
                     try:
                         da = das.attachment_service(att_id)
+                        logging.debug('Trying to detach disk attachment ' +
+                                      'id=%s' % att_id)
                         da.remove()
-                        att_ids.remove(att_id)
+                        del self._attached_disks[att_id]
                     except self.sdk.NotFoundError:
                         logging.info('Attachment id=%s does not exist (already ' +
                                      'removed?), skipping it',
                                      att_id)
-                        att_ids.remove(att_id)
+                        del self._attached_disks.remove[att_id]
                     except self.sdk.Error:
                         logging.exception('Failed to remove attachment id=%s',
                                           att_id)
                 # Avoid checking timeouts, and waiting, if there are no
                 # more attachments to remove
-                if len(att_ids) > 0:
+                if len(self._attached_disks) > 0:
                     if time.time() > endt:
                         logging.error('Timed out waiting for disks: %r',
                                       disk_ids)
                         break
                 time.sleep(1)
+
+    def get_disk_path(self, disk):
+        return '/dev/disk/by-id/virtio-%s' % disk[:20]
+
+    def get_disk_paths(self):
+        return [self.get_disk_path(disk)
+                for disk in self._attached_disks.keys()]
 
     def handle_cleanup(self, data, state):
         if data['two_phase']:
@@ -868,13 +886,6 @@ class VDSMHost(BaseHost):
                        'ISO domain')
         data['virtio_win'] = full_path
         logging.info("virtio_win (re)defined as: %s", data['virtio_win'])
-
-    def get_disk_path(self, disk):
-        return '/dev/disk/by-id/virtio-%s' % disk[:20]
-
-    def get_disk_paths(self):
-        return [self.get_disk_path(disk)
-                for disk in self._attached_disks.keys()]
 
     def prepare_command(self, data, v2v_args, v2v_env, v2v_caps, two_phase=False):
         v2v_args.extend([

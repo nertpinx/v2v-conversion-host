@@ -415,11 +415,16 @@ def main():
     wrapper_log = os.path.join(log_dirs[1],
                                'v2v-import-%s-wrapper.log' % log_tag)
     state.state_file = os.path.join(STATE_DIR, 'v2v-import-%s.state' % log_tag)
+    pre_copy_dirname = 'v2v-import-%s-precopy' % log_tag
     state['internal']['pre_copy'] = {
         'libvirtxml': os.path.join(STATE_DIR, 'v2v-import-%s.xml' % log_tag),
-        'socketdir': os.path.join(STATE_DIR, 'v2v-import-%s-sockets' % log_tag)
+        'tempdir': os.path.join(STATE_DIR, pre_copy_dirname),
+        'logdir': os.path.join(log_dirs[1], pre_copy_dirname),
     }
-    os.mkdir(state['internal']['pre_copy']['socketdir'])
+    os.mkdir(state['internal']['pre_copy']['tempdir'])
+    os.chown(, uid, gid)
+
+    os.mkdir(state['internal']['pre_copy']['logdir'])
     throttling_file = os.path.join(STATE_DIR,
                                    'v2v-import-%s.throttle' % log_tag)
     state['internal']['throttling_file'] = throttling_file
@@ -581,6 +586,8 @@ def main():
                 'state_file': state.state_file,
                 'throttling_file': throttling_file,
             }
+            if data['two_phase']:
+                outinfo['pre_copy_logdir'] = state['internal']['pre_copy']['logdir']
             print(json.dumps(outinfo))
 
             # Let's get to work
@@ -632,12 +639,11 @@ def main():
             raise
         finally:
             if 'pre_copy' in globals():
+                logging.info('Cleaning up pre-copy stuff')
                 pre_copy.cleanup()
             if state.get('failed', False):
                 # Perform cleanup after failed conversion
                 logging.debug('Cleanup phase')
-                if 'pre_copy' in globals():
-                    pre_copy.cleanup()
                 try:
                     host.handle_cleanup(data, state)
                 finally:
@@ -670,6 +676,9 @@ def main():
                 error('Error removing password file(s)',
                       'Error removing password file: %s' % f,
                       exception=True)
+        # Always make sure the state is marked as finished
+        state['finished'] = True
+        state.write()
         # Re-raise original error
         raise
 
