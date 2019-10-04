@@ -14,18 +14,18 @@ class TestV2vArgs(unittest.TestCase):
             previous = first
             first = None
             try:
-                first = arg_list.index(expected[0], previous+1)
+                first = arg_list.index(expected[0], previous + 1)
             except ValueError:
                 pass
             self.assertIsNotNone(first, msg=msg)
-            self.assertGreaterEqual(len(arg_list), first+len(expected),
+            self.assertGreaterEqual(len(arg_list), first + len(expected),
                                     msg=msg)
             matched = 0
             for i in range(1, items):
-                if arg_list[first+i] != expected[i]:
+                if arg_list[first + i] != expected[i]:
                     break
                 matched = matched + 1
-            if matched == items-1:
+            if matched == items - 1:
                 return
         self.fail('How did we get here?')
 

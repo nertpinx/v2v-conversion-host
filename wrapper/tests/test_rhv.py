@@ -16,59 +16,59 @@ class TestRHV(unittest.TestCase):
     def test_tools_iso_ordering(self):
         host = hosts.VDSMHost()
         self.assertEqual(
+            b'virtio-win-123.iso',
+            host._filter_iso_names(b'/', [
+                b'a.iso',
                 b'virtio-win-123.iso',
-                host._filter_iso_names(b'/', [
-                    b'a.iso',
-                    b'virtio-win-123.iso',
-                    b'b.iso',
-                    ]))
+                b'b.iso',
+            ]))
         # Priority
         self.assertEqual(
+            b'RHEV-toolsSetup_123.iso',
+            host._filter_iso_names(b'/', [
                 b'RHEV-toolsSetup_123.iso',
-                host._filter_iso_names(b'/', [
-                    b'RHEV-toolsSetup_123.iso',
-                    b'virtio-win-123.iso',
-                    ]))
+                b'virtio-win-123.iso',
+            ]))
         self.assertEqual(
+            b'RHEV-toolsSetup_123.iso',
+            host._filter_iso_names(b'/', [
+                b'virtio-win-123.iso',
                 b'RHEV-toolsSetup_123.iso',
-                host._filter_iso_names(b'/', [
-                    b'virtio-win-123.iso',
-                    b'RHEV-toolsSetup_123.iso',
-                    ]))
+            ]))
         self.assertEqual(
+            b'RHEV-toolsSetup_234.iso',
+            host._filter_iso_names(b'/', [
+                b'RHEV-toolsSetup_123.iso',
+                b'virtio-win-123.iso',
                 b'RHEV-toolsSetup_234.iso',
-                host._filter_iso_names(b'/', [
-                    b'RHEV-toolsSetup_123.iso',
-                    b'virtio-win-123.iso',
-                    b'RHEV-toolsSetup_234.iso',
-                    ]))
+            ]))
         self.assertEqual(
+            b'RHEV-toolsSetup_234.iso',
+            host._filter_iso_names(b'/', [
                 b'RHEV-toolsSetup_234.iso',
-                host._filter_iso_names(b'/', [
-                    b'RHEV-toolsSetup_234.iso',
-                    b'virtio-win-123.iso',
-                    b'RHEV-toolsSetup_123.iso',
-                    ]))
+                b'virtio-win-123.iso',
+                b'RHEV-toolsSetup_123.iso',
+            ]))
         self.assertEqual(
+            b'rhv-tools-setup.iso',
+            host._filter_iso_names(b'/', [
                 b'rhv-tools-setup.iso',
-                host._filter_iso_names(b'/', [
-                    b'rhv-tools-setup.iso',
-                    b'virtio-win-123.iso',
-                    ]))
+                b'virtio-win-123.iso',
+            ]))
         # Version
         self.assertEqual(
+            b'RHEV-toolsSetup_4.0_3.iso',
+            host._filter_iso_names(b'/', [
                 b'RHEV-toolsSetup_4.0_3.iso',
-                host._filter_iso_names(b'/', [
-                    b'RHEV-toolsSetup_4.0_3.iso',
-                    b'RHEV-toolsSetup_4.0_2.iso',
-                    ]))
+                b'RHEV-toolsSetup_4.0_2.iso',
+            ]))
 
         self.assertEqual(
+            b'RHEV-toolsSetup_4.1_3.iso',
+            host._filter_iso_names(b'/', [
+                b'RHEV-toolsSetup_4.0_3.iso',
                 b'RHEV-toolsSetup_4.1_3.iso',
-                host._filter_iso_names(b'/', [
-                    b'RHEV-toolsSetup_4.0_3.iso',
-                    b'RHEV-toolsSetup_4.1_3.iso',
-                    ]))
+            ]))
 
     VDDK_RHV = {
         'vm_name': 'My Virtual',
@@ -119,7 +119,7 @@ class TestRHV(unittest.TestCase):
         ]
         host = hosts.BaseHost.factory(hosts.BaseHost.TYPE_VDSM)
         v2v_args, v2v_env = host.prepare_command(
-                data, [], {}, [])
+            data, [], {}, [])
         self.assertEqual(v2v_args, expected)
 
     def test_vddk_rhv_insecure(self):
@@ -139,7 +139,7 @@ class TestRHV(unittest.TestCase):
         ]
         host = hosts.BaseHost.factory(hosts.BaseHost.TYPE_VDSM)
         v2v_args, v2v_env = host.prepare_command(
-                data, [], {}, [])
+            data, [], {}, [])
         self.assertEqual(v2v_args, expected)
 
     def test_vddk_export(self):
@@ -152,5 +152,5 @@ class TestRHV(unittest.TestCase):
         ]
         host = hosts.BaseHost.factory(hosts.BaseHost.TYPE_VDSM)
         v2v_args, v2v_env = host.prepare_command(
-                data, [], {}, [])
+            data, [], {}, [])
         self.assertEqual(v2v_args, expected)

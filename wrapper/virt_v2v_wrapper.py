@@ -31,12 +31,13 @@ import six
 import tempfile
 import time
 
-from .singleton import State
+from .singleton import State, StateHandler
 from .common import error, hard_error, log_command_safe
 from .hosts import BaseHost
 from .runners import SystemdRunner
 from .log_parser import log_parser
 from .checks import CHECKS
+
 
 if six.PY2:
     DEVNULL = open(os.devnull, 'r+')
@@ -91,29 +92,40 @@ def daemonize():
     pycurl.global_init(pycurl.GLOBAL_ALL)
 
 
-def prepare_command(data, v2v_caps, agent_sock=None):
+def prepare_command(data, v2v_caps, agent_sock=None, phase=None):
     state = State().instance
     v2v_args = [
         '-v', '-x',
-        data['vm_name'],
         '--root', 'first',
         '--machine-readable=file:{}'.format(state.machine_readable_log),
     ]
+    if phase is None:
+        v2v_args.append(data['vm_name'])
+    elif data['transport_method'] != 'vddk':
+        raise RuntimeError("Two-phase is supported only with vddk")
 
     if data['transport_method'] == 'vddk':
-        v2v_args.extend([
-            '-i', 'libvirt',
-            '-ic', data['vmware_uri'],
-            '-it', 'vddk',
-            '-io', 'vddk-libdir=%s' % '/opt/vmware-vix-disklib-distrib',
-            '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
-            '--password-file', data['vmware_password_file'],
+        if phase is None:
+            v2v_args.extend([
+                '-i', 'libvirt',
+                '-ic', data['vmware_uri'],
+                '-it', 'vddk',
+                '-io', 'vddk-libdir=%s' % '/opt/vmware-vix-disklib-distrib',
+                '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
+                '--password-file', data['vmware_password_file'],
             ])
+        else:
+            v2v_args.extend([
+                '-i', 'libvirtxml',
+                state['internal']['pre_copy']['libvirtxml'],
+            ])
+            if phase == 1:
+                v2v_args.append('--in-place')
     elif data['transport_method'] == 'ssh':
         v2v_args.extend([
             '-i', 'vmx',
             '-it', 'ssh',
-            ])
+        ])
 
     if 'network_mappings' in data:
         for mapping in data['network_mappings']:
@@ -235,12 +247,12 @@ def throttling_update(runner, initial=None):
     logging.info('New throttling setup: %r', state['throttling'])
 
 
-def wrapper(host, data, v2v_caps, agent_sock=None):
-
+def wrapper(host, data, v2v_caps, agent_sock=None, phase=None):
     state = State().instance
-    v2v_args, v2v_env = prepare_command(data, v2v_caps, agent_sock)
-    v2v_args, v2v_env = host.prepare_command(
-        data, v2v_args, v2v_env, v2v_caps)
+    v2v_args, v2v_env = prepare_command(data, v2v_caps, agent_sock, phase)
+    if phase != 1:
+        v2v_args, v2v_env = host.prepare_command(
+            data, v2v_args, v2v_env, v2v_caps, phase is not None)
 
     logging.info('Starting virt-v2v:')
     log_command_safe(v2v_args, v2v_env)
@@ -363,7 +375,6 @@ def virt_v2v_capabilities():
 #  Main {{{
 #
 
-
 def main():
     if len(sys.argv) > 1:
         if sys.argv[1] == '--checks':
@@ -404,6 +415,11 @@ def main():
     wrapper_log = os.path.join(log_dirs[1],
                                'v2v-import-%s-wrapper.log' % log_tag)
     state.state_file = os.path.join(STATE_DIR, 'v2v-import-%s.state' % log_tag)
+    state['internal']['pre_copy'] = {
+        'libvirtxml': os.path.join(STATE_DIR, 'v2v-import-%s.xml' % log_tag),
+        'socketdir': os.path.join(STATE_DIR, 'v2v-import-%s-sockets' % log_tag)
+    }
+    os.mkdir(state['internal']['pre_copy']['socketdir'])
     throttling_file = os.path.join(STATE_DIR,
                                    'v2v-import-%s.throttle' % log_tag)
     state['internal']['throttling_file'] = throttling_file
@@ -414,6 +430,10 @@ def main():
         level=LOG_LEVEL,
         filename=wrapper_log,
         format=log_format)
+
+    state_log_handler = StateHandler()
+    state_log_handler.setLevel(logging.DEBUG)
+    logging.getLogger().addHandler(state_log_handler)
 
     logging.info('Wrapper version %s, uid=%d', VERSION, os.getuid())
 
@@ -448,7 +468,7 @@ def main():
                     'vmware_fingerprint',
                     'vmware_uri',
                     'vmware_password',
-                    ]:
+            ]:
                 if k not in data:
                     hard_error('Missing argument: %s' % k)
 
@@ -482,6 +502,14 @@ def main():
         if data['warm'] and not data['two_phase']:
             hard_error('Warm conversion requires also two-phase conversion ' +
                        'and cannot be performed without it')
+        if data['two_phase']:
+            if data['transport_method'] != 'vddk':
+                hard_error('Two-phase conversion requires ' +
+                           'vddk transport method')
+            # Disk syncing has more requirements, let's load them only when
+            # they are actually needed
+            from . import pre_copy
+            pre_copy.prepare(data)
 
         # Method dependent validation
         data = host.validate_data(data)
@@ -494,8 +522,8 @@ def main():
         logging.info('Writing password file(s)')
         if 'vmware_password' in data:
             data['vmware_password_file'] = write_password(
-                    data['vmware_password'], password_files,
-                    host.get_uid(), host.get_gid())
+                data['vmware_password'], password_files,
+                host.get_uid(), host.get_gid())
         if 'rhv_password' in data:
             data['rhv_password_file'] = write_password(data['rhv_password'],
                                                        password_files,
@@ -547,12 +575,13 @@ def main():
             state.write()
 
             # Send some useful info on stdout in JSON
-            print(json.dumps({
+            outinfo = {
                 'v2v_log': state.v2v_log,
                 'wrapper_log': wrapper_log,
                 'state_file': state.state_file,
                 'throttling_file': throttling_file,
-            }))
+            }
+            print(json.dumps(outinfo))
 
             # Let's get to work
             if 'daemonize' not in data or data['daemonize']:
@@ -574,23 +603,41 @@ def main():
                     data, host.get_uid(), host.get_gid())
                 if agent_pid is None:
                     raise RuntimeError('Failed to start ssh-agent')
-            wrapper(host, data, virt_v2v_caps, agent_sock)
+            if data['two_phase']:
+                pre_copy.connect(data)
+                host.create_disks(data)
+                host.attach_disks(data)
+                pre_copy.prepare_libvirtxml(data, host)
+                if data['warm']:
+                    pre_copy.actually_sync_disks_but_first_please_rename_and_implement_me()
+                else:
+                    pre_copy.start_nbdkits(data)
+                    pre_copy.qemu_img_convert(data)
+                wrapper(host, data, virt_v2v_caps, agent_sock, phase=1)
+                wrapper(host, data, virt_v2v_caps, agent_sock, phase=2)
+                host.detach_disks()
+            else:
+                wrapper(host, data, virt_v2v_caps, agent_sock)
             if agent_pid is not None:
                 os.kill(agent_pid, signal.SIGTERM)
             if not state.get('failed', False):
                 state['failed'] = not host.handle_finish(data, state)
         except Exception as e:
             # No need to log the exception, it will get logged below
-            error(e.args[0],
+            error(e.args and e.args[0] or "Unknown error",
                   'An error occured, finishing state file...',
                   exception=True)
             state['failed'] = True
             state.write()
             raise
         finally:
+            if 'pre_copy' in globals():
+                pre_copy.cleanup()
             if state.get('failed', False):
                 # Perform cleanup after failed conversion
                 logging.debug('Cleanup phase')
+                if 'pre_copy' in globals():
+                    pre_copy.cleanup()
                 try:
                     host.handle_cleanup(data, state)
                 finally:
@@ -612,6 +659,8 @@ def main():
 
     except Exception:
         logging.exception('Wrapper failure')
+        if 'pre_copy' in globals():
+            pre_copy.cleanup()
         # Remove password files
         logging.info('Removing password files')
         for f in password_files:

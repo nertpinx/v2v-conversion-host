@@ -9,6 +9,7 @@ import sys
 import time
 import uuid
 
+from collections import OrderedDict
 from contextlib import contextmanager
 from io import BytesIO
 from six.moves.urllib.parse import urlparse
@@ -16,7 +17,6 @@ from six.moves.urllib.parse import urlparse
 from .common import error, hard_error, log_command_safe
 from .runners import SubprocessRunner, SystemdRunner
 from .singleton import State
-
 
 TIMEOUT = 300
 #
@@ -166,7 +166,7 @@ class CNVHost(BaseHost):
         state = State().instance
         disks = [d['progress'] for d in state['disks']]
         if len(disks) > 0:
-            progress = sum(disks)/len(disks)
+            progress = sum(disks) / len(disks)
         else:
             progress = 0
 
@@ -305,7 +305,7 @@ class OSPHost(BaseHost):
         transfers = self._run_openstack([
             'volume', 'transfer', 'request', 'list',
             '--format', 'json',
-            ], data)
+        ], data)
         if transfers is None:
             logging.error('Failed to remove transfer(s)')
         else:
@@ -398,7 +398,7 @@ class OSPHost(BaseHost):
                 'volume', 'transfer', 'request', 'create',
                 '--format', 'json',
                 vol,
-                ], data)
+            ], data)
             if transfer is None:
                 error('Failed to transfer volume')
                 return False
@@ -407,7 +407,7 @@ class OSPHost(BaseHost):
                 'volume', 'transfer', 'request', 'accept',
                 '--auth-key', transfer['auth_key'],
                 transfer['id']
-                ], data, destination=True)
+            ], data, destination=True)
         # Create ports
         ports = []
         for nic in data['network_mappings']:
@@ -418,7 +418,7 @@ class OSPHost(BaseHost):
                 '--mac-address', nic['mac_address'],
                 '--enable',
                 '%s_port_%s' % (vm_name, len(ports)),
-                ]
+            ]
             if 'ip_address' in nic:
                 ipaddr = nic['ip_address']
                 subnets_cmd = [
@@ -452,15 +452,15 @@ class OSPHost(BaseHost):
             'server', 'create',
             '--format', 'json',
             '--flavor', data['osp_flavor_id'],
-            ]
+        ]
         for grp in data['osp_security_groups_ids']:
             os_command.extend(['--security-group', grp])
         os_command.extend(['--volume', volumes[0]])
         for i in xrange(1, len(volumes)):
             os_command.extend([
                 '--block-device-mapping',
-                '%s=%s' % (self._get_disk_name(i+1), volumes[i]),
-                ])
+                '%s=%s' % (self._get_disk_name(i + 1), volumes[i]),
+            ])
         for port in ports:
             os_command.extend(['--nic', 'port-id=%s' % port])
         os_command.append(vm_name)
@@ -485,7 +485,7 @@ class OSPHost(BaseHost):
             '-o', 'openstack',
             '-oo', 'server-id=%s' % data['osp_server_id'],
             '-oo', 'guest-id=%s' % data['osp_guest_id'],
-            ])
+        ])
         # Convert to arguments of the form os-something
         for k, v in six.iteritems(data['osp_environment']):
             v2v_args.extend([
@@ -494,11 +494,11 @@ class OSPHost(BaseHost):
         if 'osp_volume_type_id' in data:
             v2v_args.extend([
                 '-os', data['osp_volume_type_id'],
-                ])
+            ])
         if data['insecure_connection']:
             v2v_args.extend([
                 '-oo', 'verify-server-certificate=false'
-                ])
+            ])
         return v2v_args, v2v_env
 
     def set_user(self, data):
@@ -520,7 +520,7 @@ class OSPHost(BaseHost):
                 'osp_flavor_id',
                 'osp_security_groups_ids',
                 'osp_server_id',
-                ]:
+        ]:
             if k not in data:
                 hard_error('Missing argument: %s' % k)
         if 'insecure_connection' not in data:
@@ -570,7 +570,7 @@ class OSPHost(BaseHost):
         one = index // 26
         two = index % 26
         enumid = (lambda i: chr(ord('a') + i))
-        return 'vd%s%s' % ('' if one == 0 else enumid(one-1), enumid(two))
+        return 'vd%s%s' % ('' if one == 0 else enumid(one - 1), enumid(two))
 
     def _run_openstack(self, cmd, data, destination=False):
         """
@@ -615,7 +615,7 @@ class VDSMHost(BaseHost):
         (2, br'ovirt-tools-setup\.iso'),
         (1, br'virtio-win-([0-9.]+).iso'),
         (0, br'virtio-win\.iso'),
-        ]
+    ]
     VDSM_LOG_DIR = '/var/log/vdsm/import'
     VDSM_MOUNTS = '/rhev/data-center/mnt'
     VDSM_CA = '/etc/pki/vdsm/certs/cacert.pem'
@@ -635,8 +635,10 @@ class VDSMHost(BaseHost):
             self.sdk.types.StorageType.GLUSTERFS,
             self.sdk.types.StorageType.ISCSI,
             self.sdk.types.StorageType.POSIXFS,
-            )
+        )
         self._export_domain = False
+        self._created_disks = OrderedDict()
+        self._attached_disks = OrderedDict()
 
     @contextmanager
     def sdk_connection(self, data):
@@ -670,9 +672,114 @@ class VDSMHost(BaseHost):
         """ Returns tuple with directory for virt-v2v log and wrapper log """
         return (self.VDSM_LOG_DIR, self.VDSM_LOG_DIR)
 
-    def handle_cleanup(self, data, state):
+    def create_disks(self, data):
+        state = State().instance
+        disks = state['pre_copy']['disks']
         with self.sdk_connection(data) as conn:
-            disks_service = conn.system_service().disks_service()
+            system_service = conn.system_service()
+            if data['output_format'] == 'raw':
+                disk_format = self.sdk.types.DiskFormat.RAW
+            elif data['output_format'] == 'qcow2':
+                disk_format = self.sdk.types.DiskFormat.COW
+
+            for i, disk_data in enumerate(disks.values()):
+                disk = self.sdk.types.Disk(
+                    name='%s-%03d' % (data['vm_name'], i),
+                    description='Created by virt-v2v-wrapper during pre_copy phase',
+                    format=disk_format,
+                    initial_size=disk_data['size'],
+                    provisioned_size=disk_data['size'],
+                    # sparse=data['allocation'] == 'sparse',
+                    storage_domains=[
+                        self.sdk.types.StorageDomain(name=data['rhv_storage'])
+                    ])
+                disk = system_service.disks_service().add(disk)
+                disk = system_service.disks_service().disk_service(disk.id)
+                # Adding it here so that it gets tried to be cleaned up even if
+                # the timeout is reached
+                d = disk.get()
+                self._created_disks[d.id] = d
+                status = None
+                for _ in range(20):
+                    status = disk.get().status
+                    if status == self.sdk.types.DiskStatus.OK:
+                        break
+                    time.sleep(1)
+                if status != self.sdk.types.DiskStatus.OK:
+                    raise RuntimeError("Timed out waiting for disk to become unlocked")
+
+    def remove_disks(self, data):
+        vm_id = str(data['rhv_server_id'])
+        with self.sdk_connection(data) as conn:
+            system_service = conn.system_service()
+            vm = system_service.vms_service().vm_service(vm_id)
+            ds = system_service.disks_service()
+            self._delete_disks(ds, self._created_disks.keys())
+
+    def attach_disks(self, data):
+        vm_id = str(data['rhv_server_id'])
+        with self.sdk_connection(data) as conn:
+            system_service = conn.system_service()
+            vm = system_service.vms_service().vm_service(vm_id)
+            ds = system_service.disks_service()
+            das = vm.disk_attachments_service()
+            desc = "Temporary attachment for pre_copy of VM %s" % data['vm_name']
+            for disk_id, disk in six.iteritems(self._created_disks):
+                disk_att = das.add(
+                    self.sdk.types.DiskAttachment(
+                        active=True,
+                        bootable=False,
+                        description=desc,
+                        disk=disk,
+                        vm=vm.get(),
+                        interface=self.sdk.types.DiskInterface.VIRTIO))
+                disk_att = das.attachment_service(disk_att.id)
+                # This double getting is here to "guarantee" that it exists
+                # Also we keep the object to interact with it later
+                self._attached_disks[disk_att.get().id] = disk_att
+
+    def detach_disks(self, data):
+        vm_id = str(data['rhv_server_id'])
+        att_ids = self._attached_disks.keys()
+        with self.sdk_connection(data) as conn:
+            system_service = conn.system_service()
+            vm = system_service.vms_service().vm_service(vm_id)
+            das = vm.disk_attachments_service()
+            while len(att_ids) > 0:
+                for att_id in att_ids[:]:
+                    try:
+                        da = das.attachment_service(att_id)
+                        da.remove()
+                        att_ids.remove(att_id)
+                    except self.sdk.NotFoundError:
+                        logging.info('Attachment id=%s does not exist (already ' +
+                                     'removed?), skipping it',
+                                     att_id)
+                        att_ids.remove(att_id)
+                    except self.sdk.Error:
+                        logging.exception('Failed to remove attachment id=%s',
+                                          att_id)
+                # Avoid checking timeouts, and waiting, if there are no
+                # more attachments to remove
+                if len(att_ids) > 0:
+                    if time.time() > endt:
+                        logging.error('Timed out waiting for disks: %r',
+                                      disk_ids)
+                        break
+                time.sleep(1)
+
+    def handle_cleanup(self, data, state):
+        if data['two_phase']:
+            self._handle_two_phase_cleanup(data, state)
+        else:
+            self._handle_simple_cleanup(data, state)
+
+    def _handle_two_phase_cleanup(self, data, state):
+        self.detach_disks(data)
+        self.remove_disks(data)
+
+    def _handle_simple_cleanup(self, data, state):
+        with self.sdk_connection(data) as conn:
             transfers_service = conn.system_service().image_transfers_service()
             disk_ids = state['internal']['disk_ids'].values()
             # First stop all active transfers...
@@ -692,36 +799,38 @@ class VDSMHost(BaseHost):
                     disk_ids.remove(transfer.image.id)
             except self.sdk.Error:
                 logging.exception('Failed to cancel transfers')
+            self._delete_disks(conn.system_service().disks_service(), disk_ids)
 
-            # ... then delete the uploaded disks
-            logging.info('Removing disks: %r', disk_ids)
-            endt = time.time() + TIMEOUT
-            while len(disk_ids) > 0:
-                for disk_id in disk_ids[:]:
-                    try:
-                        disk_service = disks_service.disk_service(disk_id)
-                        disk = disk_service.get()
-                        if disk.status != self.sdk.types.DiskStatus.OK:
-                            continue
-                        logging.info('Removing disk id=%s', disk_id)
-                        disk_service.remove()
-                        disk_ids.remove(disk_id)
-                    except self.sdk.NotFoundError:
-                        logging.info('Disk id=%s does not exist (already ' +
-                                     'removed?), skipping it',
-                                     disk_id)
-                        disk_ids.remove(disk_id)
-                    except self.sdk.Error:
-                        logging.exception('Failed to remove disk id=%s',
-                                          disk_id)
-                # Avoid checking timeouts, and waiting, if there are no
-                # more disks to remove
-                if len(disk_ids) > 0:
-                    if time.time() > endt:
-                        logging.error('Timed out waiting for disks: %r',
-                                      disk_ids)
-                        break
-                    time.sleep(1)
+    def _delete_disks(self, disks_service, disk_ids):
+        # ... then delete the uploaded disks
+        logging.info('Removing disks: %r', disk_ids)
+        endt = time.time() + TIMEOUT
+        while len(disk_ids) > 0:
+            for disk_id in disk_ids[:]:
+                try:
+                    disk_service = disks_service.disk_service(disk_id)
+                    disk = disk_service.get()
+                    if disk.status != self.sdk.types.DiskStatus.OK:
+                        continue
+                    logging.info('Removing disk id=%s', disk_id)
+                    disk_service.remove()
+                    disk_ids.remove(disk_id)
+                except self.sdk.NotFoundError:
+                    logging.info('Disk id=%s does not exist (already ' +
+                                 'removed?), skipping it',
+                                 disk_id)
+                    disk_ids.remove(disk_id)
+                except self.sdk.Error:
+                    logging.exception('Failed to remove disk id=%s',
+                                      disk_id)
+            # Avoid checking timeouts, and waiting, if there are no
+            # more disks to remove
+            if len(disk_ids) > 0:
+                if time.time() > endt:
+                    logging.error('Timed out waiting for disks: %r',
+                                  disk_ids)
+                    break
+            time.sleep(1)
 
     def check_install_drivers(self, data):
         """ Validate and/or find ISO with guest tools and drivers """
@@ -742,8 +851,8 @@ class VDSMHost(BaseHost):
                     data['install_drivers'] = False
                     return
 
-                best_name = self._filter_iso_names(
-                        iso_domain, os.listdir(iso_domain))
+                best_name = self._filter_iso_names(iso_domain,
+                                                   os.listdir(iso_domain))
                 if best_name is None:
                     # Nothing found, this is not an error
                     logging.warn('Could not find any ISO with drivers' +
@@ -760,15 +869,22 @@ class VDSMHost(BaseHost):
         data['virtio_win'] = full_path
         logging.info("virtio_win (re)defined as: %s", data['virtio_win'])
 
-    def prepare_command(self, data, v2v_args, v2v_env, v2v_caps):
+    def get_disk_path(self, disk):
+        return '/dev/disk/by-id/virtio-%s' % disk[:20]
+
+    def get_disk_paths(self):
+        return [self.get_disk_path(disk)
+                for disk in self._attached_disks.keys()]
+
+    def prepare_command(self, data, v2v_args, v2v_env, v2v_caps, two_phase=False):
         v2v_args.extend([
             '--bridge', 'ovirtmgmt',
             '-of', data['output_format'],
-            ])
+        ])
         if 'allocation' in data:
             v2v_args.extend([
                 '-oa', data['allocation']
-                ])
+            ])
 
         if 'rhv_url' in data:
             v2v_args.extend([
@@ -779,16 +895,20 @@ class VDSMHost(BaseHost):
                 '-oo', 'rhv-cafile=%s' % data['rhv_cafile'],
                 '-oo', 'rhv-cluster=%s' % data['rhv_cluster'],
                 '-oo', 'rhv-direct',
-                ])
+            ])
             if data['insecure_connection']:
                 v2v_args.extend(['-oo', 'rhv-verifypeer=%s' %
                                 ('false' if data['insecure_connection'] else
                                  'true')])
+            if two_phase:
+                for disk_id in self._attached_disks.keys():
+                    v2v_args.extend(['-oo', 'rhv-image-uuid=%s' % disk_id])
+
         elif 'export_domain' in data:
             v2v_args.extend([
                 '-o', 'rhv',
                 '-os', data['export_domain'],
-                ])
+            ])
         if 'XDG_RUNTIME_DIR' in v2v_env and self.get_uid() != 0:
             # Drop XDG_RUNTIME_DIR from environment. Otherwise it would "leak"
             # throuh our su/sudo call and would cause permissions error for
@@ -837,7 +957,7 @@ class VDSMHost(BaseHost):
                     'rhv_cluster',
                     'rhv_password',
                     'rhv_storage',
-                    ]:
+            ]:
                 if k not in data:
                     hard_error('Missing argument: %s' % k)
             if 'rhv_cafile' not in data:
@@ -851,7 +971,13 @@ class VDSMHost(BaseHost):
             hard_error('No target specified')
 
         if data['two_phase']:
-            hard_error('Two-phase conversion is not supported for CNV host')
+            if 'rhv_url' not in data:
+                hard_error('Two-phase conversion is only supported with rhv_url\n')
+            if 'rhv_server_id' not in data:
+                hard_error('Missing argument: %s' % 'rhv_server_id')
+
+        if data['warm']:
+            hard_error('Warm conversion is not supported with CNV host')
 
         # Insecure connection
         if 'insecure_connection' not in data:
@@ -881,6 +1007,22 @@ class VDSMHost(BaseHost):
                         data['allocation'] = 'preallocated'
                     logging.info('... selected allocation type is %s',
                                  data['allocation'])
+
+                # We cannot reliably check that we are running on a VM with the
+                # specified UUID in `rhv_server_id` (otherwise we would not
+                # need the ID in the input in the first place), but we can at
+                # least fail early if the machine does not exist or if it is
+                # not up.
+                if data['two_phase']:
+                    service = c.system_service().vms_service()
+                    vm = service.vm_service(str(data['rhv_server_id']))
+                    try:
+                        if vm.get().status != self.sdk.types.VmStatus.UP:
+                            hard_error('VM %s is not running,\n' % data['rhv_server_id'] +
+                                       'how can this script be running on a machine that is not up?')
+                    except self.sdk.NotFoundError:
+                        hard_error('VM %s not found,\n' +
+                                   'how can this script be running on a machine that does not exist?')
 
         return data
 

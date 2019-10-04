@@ -30,8 +30,8 @@ def check_rhv_version():
         if res >= 0:
             return True
         print('Version of VDSM on the host: {}{}'.format(
-                '' if vdsm['epoch'] is None else '%s:' % vdsm['epoch'],
-                vdsm['version']))
+            '' if vdsm['epoch'] is None else '%s:' % vdsm['epoch'],
+            vdsm['version']))
     print('Minimal required oVirt/RHV version is %s' % VDSM_MIN_RHV)
     return False
 

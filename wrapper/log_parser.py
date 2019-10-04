@@ -33,8 +33,8 @@ class OutputParser(object):
     RHV_VM_ID = re.compile(
         br'<VirtualSystem ovf:id=\'(?P<uuid>[a-fA-F0-9-]*)\'>')
     OSP_VOLUME_ID = re.compile(
-            br'openstack .*\'?volume\'? \'?show\'?.* '
-            br'\'?(?P<uuid>[a-fA-F0-9-]*)\'?$')
+        br'openstack .*\'?volume\'? \'?show\'?.* '
+        br'\'?(?P<uuid>[a-fA-F0-9-]*)\'?$')
     OSP_VOLUME_PROPS = re.compile(
         br'openstack .*\'?volume\'? \'?set.*'
         br'\'?--property\'?'
@@ -86,11 +86,11 @@ class OutputParser(object):
         m = self.COPY_DISK_RE.match(line)
         if m is not None:
             try:
-                self._current_disk = int(m.group(1))-1
+                self._current_disk = int(m.group(1)) - 1
                 self._current_path = None
                 state['disk_count'] = int(m.group(2))
                 logging.info('Copying disk %d/%d',
-                             self._current_disk+1, state['disk_count'])
+                             self._current_disk + 1, state['disk_count'])
                 if state['disk_count'] != len(state['disks']):
                     logging.warning(
                         'Number of supplied disk paths (%d) does not match'
@@ -168,7 +168,7 @@ class OutputParser(object):
         if m is not None:
             volume_id = m.group('uuid').decode('utf-8')
             ids = state['internal']['disk_ids']
-            ids[len(ids)+1] = volume_id
+            ids[len(ids) + 1] = volume_id
             logging.debug('Adding OSP volume %s', volume_id)
 
         # OpenStack volume index

@@ -19,7 +19,7 @@ class TestOutputParser(unittest.TestCase):
                 {'path': '[store1] path1.vmdk'},
                 {'path': '[store1] path2.vmdk'},
                 {'path': '[store1] path3.vmdk'},
-                ]
+            ]
             parser.parse_line(
                 state,
                 b'Copying disk 2/3 to /some/path')
@@ -38,7 +38,7 @@ class TestOutputParser(unittest.TestCase):
                 {'path': '[store1] path2.vmdk'},
                 {'path': '[store1] path1.vmdk'},
                 {'path': '[store1] path3.vmdk'},
-                ]
+            ]
             parser._locate_disk(state)
             self.assertEqual(state['disks'][0]['path'], '[store1] path1.vmdk')
             self.assertEqual(state['disks'][1]['path'], '[store1] path2.vmdk')
@@ -54,7 +54,7 @@ class TestOutputParser(unittest.TestCase):
             state['disks'] = [{
                 'path': '/path1',
                 'progress': 0.0,
-                }]
+            }]
             parser.parse_line(
                 state,
                 b'  (10.42/100%)')
@@ -101,9 +101,9 @@ class TestOutputParser(unittest.TestCase):
         state.machine_readable_log = '/dev/null'
         with wrapper.log_parser() as parser:
             lines = [
-                    br"openstack '--os-username=admin' '--os-identity-api-version=3' '--os-user-domain-name=Default' '--os-auth-url=http://10.19.2.25:5000//v3' '--os-volume-api-version=3' '--os-project-domain-name=Default' '--os-project-name=admin' '--os-password=100Root-' 'volume' 'show' '-f' 'json' '77c51545-f2a4-4bbf-8f04-169a15c23354'",  # NOQA
-                    br"openstack '--os-username=admin' '--os-identity-api-version=3' '--os-user-domain-name=Default' '--os-auth-url=http://10.19.2.25:5000//v3' '--os-volume-api-version=3' '--os-project-domain-name=Default' '--os-project-name=admin' '--os-password=100Root-' 'volume' 'show' '-f' 'json' 'd85b7a6f-bffa-4b77-93df-912afd6e7014'",  # NOQA
-                    ]
+                br"openstack '--os-username=admin' '--os-identity-api-version=3' '--os-user-domain-name=Default' '--os-auth-url=http://10.19.2.25:5000//v3' '--os-volume-api-version=3' '--os-project-domain-name=Default' '--os-project-name=admin' '--os-password=100Root-' 'volume' 'show' '-f' 'json' '77c51545-f2a4-4bbf-8f04-169a15c23354'",  # NOQA
+                br"openstack '--os-username=admin' '--os-identity-api-version=3' '--os-user-domain-name=Default' '--os-auth-url=http://10.19.2.25:5000//v3' '--os-volume-api-version=3' '--os-project-domain-name=Default' '--os-project-name=admin' '--os-password=100Root-' 'volume' 'show' '-f' 'json' 'd85b7a6f-bffa-4b77-93df-912afd6e7014'",  # NOQA
+            ]
             for l in lines:
                 parser.parse_line(state, l)
             self.assertIn(1, state['internal']['disk_ids'])

@@ -4,7 +4,6 @@ import re
 import six
 import sys
 
-from .singleton import State
 
 if six.PY3:
     xrange = range
@@ -42,12 +41,6 @@ def error(short_message, *args, **kwargs):
     else:
         logging.info('have error: %r %r', args, kwargs)
         logging.error(*args, **kwargs)
-    state = State().instance
-    state['last_message'] = {
-        'message': short_message,
-        'type': 'error'
-        }
-    state.write()
 
 
 def hard_error(msg):

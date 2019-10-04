@@ -25,13 +25,12 @@ class TestRoutines(unittest.TestCase):
         log_stream = StringIO()
         test_log.addHandler(logging.StreamHandler(log_stream))
         wrapper.log_command_safe([
-                'virt-v2v',
-                '--password-file', '/some/password/file',
-                '-op', '/some/other/password/file',
-                '-oo', 'os-some-password=secret',
-                '-oo', 'os-some-other-password=password',
-            ],
-            {}, test_log)
+            'virt-v2v',
+            '--password-file', '/some/password/file',
+            '-op', '/some/other/password/file',
+            '-oo', 'os-some-password=secret',
+            '-oo', 'os-some-other-password=password',
+        ], {}, test_log)
         # Expected results
         expected_args = [
             'virt-v2v',
@@ -76,5 +75,5 @@ class TestRoutines(unittest.TestCase):
         expected = 'Executing command: %r, environment: %r\n' % \
             (expected_args, expected_env)
         self.assertEqual(
-                expected,
-                log_stream.getvalue())
+            expected,
+            log_stream.getvalue())

@@ -71,12 +71,12 @@ class SubprocessRunner(BaseRunner):
     def run(self):
         with open(self._log, 'w') as log:
             self._proc = subprocess.Popen(
-                    [VIRT_V2V] + self._arguments,
-                    stdin=DEVNULL,
-                    stderr=subprocess.STDOUT,
-                    stdout=log,
-                    env=self._environment,
-                    )
+                [VIRT_V2V] + self._arguments,
+                stdin=DEVNULL,
+                stderr=subprocess.STDOUT,
+                stdout=log,
+                env=self._environment,
+            )
 
 
 class SystemdRunner(BaseRunner):

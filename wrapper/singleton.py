@@ -1,6 +1,8 @@
 import tempfile
 import os
 import json
+import logging
+import threading
 
 
 class State(object):
@@ -21,13 +23,13 @@ class State(object):
                     'display_name': None,
                     'ports': [],
                     'throttling_file': None,
-                    },
+                },
                 'failed': False,
                 'throttling': {
                     'cpu': None,
                     'network': None,
-                    }
                 }
+            }
             self.daemonize = True
             self.state_file = None
             self.v2v_log = None
@@ -72,3 +74,19 @@ class State(object):
 
     def __getattr__(self, name):
         return getattr(self.instance, name)
+
+
+class StateHandler(logging.Handler):
+    def __init__(self):
+        super(StateHandler, self).__init__()
+        self._lock = threading.Lock()
+
+    def emit(self, record):
+        state = State().instance
+        self._lock.acquire()
+        if record.exc_info:
+            state['status'] = 'Failed'
+            state['error'] = str(record.exc_info)
+        state['last_message'] = self.format(record)
+        self._lock.release()
+        state.write()

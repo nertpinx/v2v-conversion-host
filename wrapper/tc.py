@@ -70,8 +70,8 @@ class TcController(object):
             if self._run_tc([
                     'class', 'change', 'dev', iface,
                     'classid', self._class_id, 'htb',
-                    'rate',  '{}bps'.format(limit),
-                    ]) is None:
+                    'rate', '{}bps'.format(limit),
+            ]) is None:
                 ret = False
         return ret
 
@@ -137,9 +137,9 @@ class TcController(object):
                 continue
             # Try to change the qdisc type
             if self._run_tc([
-                        'qdisc', 'add', 'dev', qdisc[0],
-                        'root', 'handle', root_handle, 'htb'
-                    ]) is None:
+                    'qdisc', 'add', 'dev', qdisc[0],
+                    'root', 'handle', root_handle, 'htb'
+            ]) is None:
                 logging.info('Failed to setup HTB qdisc on %s', qdisc[0])
             else:
                 ifaces.append(qdisc[0])
@@ -179,10 +179,10 @@ class TcController(object):
         logging.info('Creating new tc class on %s with class ID: %s',
                      iface, new_id)
         if self._run_tc([
-                    'class', 'add', 'dev', iface,
-                    'parent', handle, 'classid', new_id,
-                    'htb', 'rate', '{}bps'.format(TcController.MAX_RATE),
-                ]) is None:
+                'class', 'add', 'dev', iface,
+                'parent', handle, 'classid', new_id,
+                'htb', 'rate', '{}bps'.format(TcController.MAX_RATE),
+        ]) is None:
             logging.error('Failed to create tc class')
             return False
         atexit_command(['tc', 'class', 'del', 'dev', iface, 'classid', new_id])
@@ -193,9 +193,9 @@ class TcController(object):
         # It is OK if same filter already exists. However, if there is already
         # a different filter we're in trouble.
         return self._run_tc([
-                'filter', 'add', 'dev', iface, 'parent', handle,
-                'protocol', 'ip', 'prio', '10', 'handle', '1:', 'cgroup'
-            ]) is not None
+            'filter', 'add', 'dev', iface, 'parent', handle,
+            'protocol', 'ip', 'prio', '10', 'handle', '1:', 'cgroup'
+        ]) is not None
 
     def _run_tc(self, args):
         try:
