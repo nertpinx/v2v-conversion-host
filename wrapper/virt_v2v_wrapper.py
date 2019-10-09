@@ -92,20 +92,28 @@ def daemonize():
     pycurl.global_init(pycurl.GLOBAL_ALL)
 
 
-def prepare_command(data, v2v_caps, agent_sock=None, phase=None):
+def prepare_command(data, v2v_caps, agent_sock=None):
     state = State().instance
     v2v_args = [
         '-v', '-x',
         '--root', 'first',
         '--machine-readable=file:{}'.format(state.machine_readable_log),
+        '-on', data['dest_vm_name'],
     ]
-    if phase is None:
+    if not data['two_phase']:
         v2v_args.append(data['vm_name'])
     elif data['transport_method'] != 'vddk':
         raise RuntimeError("Two-phase is supported only with vddk")
 
     if data['transport_method'] == 'vddk':
-        if phase is None:
+        if data['two_phase']:
+            v2v_args.extend([
+                '-i', 'libvirtxml',
+                state['internal']['pre_copy']['libvirtxml'],
+                '--no-copy',
+                '--debug-overlays',
+            ])
+        else:
             v2v_args.extend([
                 '-i', 'libvirt',
                 '-ic', data['vmware_uri'],
@@ -114,13 +122,6 @@ def prepare_command(data, v2v_caps, agent_sock=None, phase=None):
                 '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
                 '--password-file', data['vmware_password_file'],
             ])
-        else:
-            v2v_args.extend([
-                '-i', 'libvirtxml',
-                state['internal']['pre_copy']['libvirtxml'],
-            ])
-            if phase == 1:
-                v2v_args.append('--in-place')
     elif data['transport_method'] == 'ssh':
         v2v_args.extend([
             '-i', 'vmx',
@@ -247,12 +248,19 @@ def throttling_update(runner, initial=None):
     logging.info('New throttling setup: %r', state['throttling'])
 
 
-def wrapper(host, data, v2v_caps, agent_sock=None, phase=None):
+def wrapper(host, data, v2v_caps, agent_sock=None):
     state = State().instance
-    v2v_args, v2v_env = prepare_command(data, v2v_caps, agent_sock, phase)
-    if phase != 1:
-        v2v_args, v2v_env = host.prepare_command(
-            data, v2v_args, v2v_env, v2v_caps, phase is not None)
+    v2v_args, v2v_env = prepare_command(data, v2v_caps, agent_sock)
+    v2v_args, v2v_env = host.prepare_command(data, v2v_args, v2v_env, v2v_caps)
+
+    if 'XDG_RUNTIME_DIR' in v2v_env and host.get_uid() != 0:
+        # Drop XDG_RUNTIME_DIR from environment. Otherwise it would "leak"
+        # throuh our su/sudo call and would cause permissions error for
+        # virt-v2v.
+        #
+        # https://bugzilla.redhat.com/show_bug.cgi?id=967509
+        logging.info('Dropping XDG_RUNTIME_DIR from environment.')
+        del v2v_env['XDG_RUNTIME_DIR']
 
     logging.info('Starting virt-v2v:')
     log_command_safe(v2v_args, v2v_env)
@@ -422,7 +430,8 @@ def main():
         'logdir': os.path.join(log_dirs[1], pre_copy_dirname),
     }
     os.mkdir(state['internal']['pre_copy']['tempdir'])
-    os.chown(, uid, gid)
+    os.chown(state['internal']['pre_copy']['tempdir'],
+             host.get_uid(), host.get_gid())
 
     os.mkdir(state['internal']['pre_copy']['logdir'])
     throttling_file = os.path.join(STATE_DIR,
@@ -460,6 +469,10 @@ def main():
         # validation, but...
         if 'vm_name' not in data:
                 hard_error('Missing vm_name')
+
+        # TODO: asdf
+        logging.warning('Oh Gods, do something with this')
+        data['dest_vm_name'] = data['vm_name'].replace(' ', '_')
 
         # Transports (only VDDK for now)
         if 'transport_method' not in data:
@@ -620,14 +633,12 @@ def main():
                 else:
                     pre_copy.start_nbdkits(data)
                     pre_copy.qemu_img_convert(data)
-                wrapper(host, data, virt_v2v_caps, agent_sock, phase=1)
-                wrapper(host, data, virt_v2v_caps, agent_sock, phase=2)
-                host.detach_disks()
-            else:
-                wrapper(host, data, virt_v2v_caps, agent_sock)
+            wrapper(host, data, virt_v2v_caps, agent_sock)
             if agent_pid is not None:
                 os.kill(agent_pid, signal.SIGTERM)
             if not state.get('failed', False):
+                if data['two_phase']:
+                    pre_copy.commit_overlays()
                 state['failed'] = not host.handle_finish(data, state)
         except Exception as e:
             # No need to log the exception, it will get logged below

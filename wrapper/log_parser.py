@@ -66,8 +66,13 @@ class OutputParser(object):
             try:
                 message = json.loads(line)
                 if message.get('type') == 'error':
-                    message = message.get('message')
-                    error('virt-v2v error: {}'.format(message))
+                    msg = message.get('message')
+                    error('virt-v2v error: {}'.format(msg))
+                elif message.get('type') == 'data':
+                    v2v_data = message.get('data', {})
+                    if 'v2v_data' not in state['internal']:
+                        state['internal']['v2v_data'] = {}
+                    state['internal']['v2v_data'].update(v2v_data)
             except json.decoder.JSONDecodeError:
                 logging.exception(
                     'Failed to parse line from'

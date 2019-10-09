@@ -6,6 +6,7 @@ import logging
 import nbd
 import six
 import subprocess
+import time
 
 import xml.etree.ElementTree as ETree
 
@@ -24,6 +25,7 @@ MAX_PREAD_LEN = 23 << 20  # 23MB (24M requests fail in vddk)
 
 NBD_MIN_VERSION = version.parse("0.9.8")
 
+TIMEOUT = 10  # Seconds
 
 # TODO: Make it into a class and:
 # - use members instead of state['internal']
@@ -136,6 +138,7 @@ def get_disks():
         state['internal']['pre_copy']['disks'][str(disk.key)] = {
             'vmw_obj': disk,
         }
+    state.write()
 
 
 def validate():
@@ -154,6 +157,7 @@ def get_nbdkit_cmd(data, sock_path, pidfile_path, disk):
         'env',
         env,
         'nbdkit',
+        '-v',
         '-U', sock_path,
         '-P', pidfile_path,
         '--exit-with-parent',
@@ -167,7 +171,7 @@ def get_nbdkit_cmd(data, sock_path, pidfile_path, disk):
         'server=%s' % state['internal']['pre_copy']['server'],
         'thumbprint=%s' % data['vmware_fingerprint'],
         'password=+%s' % data['vmware_password_file'],
-        'libdir=%s' % '/opt/vmware-vix-disklib-distrib/lib64',
+        'libdir=%s' % '/opt/vmware-vix-disklib-distrib',
         'file=%s' % disk['path'],
         'logfile=/dev/stdout',
     ]
@@ -181,20 +185,36 @@ def start_nbdkits(data):
     state = State().instance
     tempdir = state['internal']['pre_copy']['tempdir']
     logdir = state['internal']['pre_copy']['logdir']
+    wait_for_paths = []
     for disk_key, disk in six.iteritems(state['pre_copy']['disks']):
         sock_path = os.path.join(tempdir, 'nbdkit-%s.sock' % disk_key)
         log_path = os.path.join(logdir, 'nbdkit-%s.log' % disk_key)
         pidfile_path = os.path.join(logdir, 'nbdkit-%s.pid' % disk_key)
         disk_internal = state['internal']['pre_copy']['disks'][disk_key]
         disk_internal['nbdkit_sock'] = sock_path
+        disk_internal['nbdkit_log'] = log_path
+        disk_internal['nbdkit_pidfile'] = pidfile_path
+        wait_for_paths.append(sock_path)
         cmd = get_nbdkit_cmd(data, sock_path, pidfile_path, disk)
         logging.debug('Starting nbdkit: %s', cmd)
-        with open(log_path, 'w') as logfile:
-            proc = subprocess.Popen(cmd,
-                                    stdout=logfile,
-                                    stderr=subprocess.STDOUT,
-                                    stdin=DEVNULL)
+        proc = subprocess.Popen(cmd,
+                                stdout=open(log_path, 'w'),
+                                stderr=subprocess.STDOUT,
+                                stdin=DEVNULL)
         disk_internal['nbdkit_process'] = proc
+
+    logging.debug('Waiting for all nbdkit processes to initialize')
+    endt = time.time() + TIMEOUT
+    while wait_for_paths:
+        for path in wait_for_paths[:]:
+            if os.path.exists(path):
+                wait_for_paths.remove(path)
+        if endt < time.time() or not wait_for_paths:
+            break
+        time.sleep(.1)
+
+    if wait_for_paths:
+        raise RuntimeError('Timed out waiting for nbdkits to initialize')
 
 
 def get_domxml(data):
@@ -221,7 +241,7 @@ def fix_disks(domxml, disk_map):
     logging.debug('Using disk map %s', disk_map)
     tree = ETree.fromstring(domxml)
     for disk in tree.find('devices').findall('disk'):
-        logging.debug('Trying to fixup `%s`', ETree.tostring(disk))
+        logging.debug('Trying to fixup "%s"', ETree.tostring(disk))
         src = disk.find('source')
         if src is None:
             continue
@@ -231,17 +251,18 @@ def fix_disks(domxml, disk_map):
         if path not in disk_map:
             continue
         dm = disk_map[path]
-        disk.set('type', 'block')
-        logging.debug('Changing path `%s` to device `%s` in domain XML',
+        # disk.set('type', 'block')
+        logging.debug('Changing path "%s" to device "%s" in domain XML',
                       path, dm['path'])
-        del src.attrib['file']
-        src.set('dev', dm['path'])
+        # del src.attrib['file']
+        # src.set('dev', dm['path'])
+        src.set('file', dm['path'])
         dm['fixed'] = True
 
     # Check that all paths were changed
     for k, v in six.iteritems(disk_map):
         if not v['fixed']:
-            raise RuntimeError('Disk path `%s` was not fixed in the domxml' % k)
+            raise RuntimeError('Disk path "%s" was not fixed in the domxml' % k)
     return ETree.tostring(tree)
 
 
@@ -297,7 +318,7 @@ def nbd_uri_from_socket(socket):
 #         disk_state = state['disks'][str(disk.key)]
 #         if 'change_ids' not in disk_state.keys():
 #             disk_state['change_ids'] = []
-#         logging.debug('Adding change ID `%s` to the list for disk %s' %
+#         logging.debug('Adding change ID "%s" to the list for disk %s' %
 #                       (disk.backing.changeId, disk.deviceInfo.label))
 #         disk_state['change_ids'].append(disk.backing.changeId)
 #     state.write()
@@ -337,7 +358,7 @@ def nbd_uri_from_socket(socket):
 #             error('Cannot continue, last run did not complete successfully')
 
 #         if 'sync_type' not in state.keys():
-#             error('Missing `sync_type` from last state')
+#             error('Missing "sync_type" from last state')
 #         if state['sync_type'] == 'final':
 #             error('Nothing to do after the final sync')
 
@@ -640,7 +661,7 @@ def nbd_uri_from_socket(socket):
 #         data = json.load(f)
 
 #     if 'vm_uuid' not in data and 'vm_name' not in data:
-#         raise KeyError('Either `vm_name` or `vm_uuid` must be supplied in input data')
+#         raise KeyError('Either "vm_name" or "vm_uuid" must be supplied in input data')
 
 #     for key in ('vm_uuid', 'vm_name'):
 #         if key in data:
@@ -648,16 +669,16 @@ def nbd_uri_from_socket(socket):
 #                 state[key] = data[key]
 #             elif state[key] != data[key]:
 #                 raise ValueError('Mismatch in values for ' +
-#                                  ' key `%s`: "%s" != "%s"' %
+#                                  ' key "%s": "%s" != "%s"' %
 #                                  (key, state[key], data[key]))
 
 #     for key in ('vmware_uri', 'vmware_fingerprint', 'pwdfile', 'statefile'):
 #         if key not in data:
-#             raise KeyError('Missing `%s` in input data' % key)
+#             raise KeyError('Missing "%s" in input data' % key)
 #         if state['sync_type'] == 'initial':
 #             state[key] = data[key]
 #         elif state[key] != data[key]:
-#             raise ValueError('Mismatch in values for key `%s`: "%s" != "%s"' %
+#             raise ValueError('Mismatch in values for key "%s": "%s" != "%s"' %
 #                              (key, state[key], data[key]))
 
 #     if 'loglevel' in data:
@@ -722,7 +743,10 @@ def actually_sync_disks_but_first_please_rename_and_implement_me():
 def qemu_img_convert(data):
     state = State().instance
     try:
-        for disk in state['internal']['pre_copy']['disks'].values():
+        for i, (key, disk) in enumerate(state['internal']['pre_copy']['disks'].items()):
+            logging.debug('Copying disk #%d', i)
+            state['pre_copy']['disks'][key]['status'] = 'Copying'
+            state.write()
             proc = subprocess.check_output(['qemu-img', 'convert',
                                             '-f', 'raw',
                                             nbd_uri_from_socket(disk['nbdkit_sock']),
@@ -730,6 +754,32 @@ def qemu_img_convert(data):
                                             disk['local_path']],
                                            stderr=subprocess.STDOUT,
                                            universal_newlines=True)
+            state['pre_copy']['disks'][key]['status'] = 'Copied'
+            state.write()
+    except subprocess.CalledProcessError as e:
+        error('qemu-img failed with: %s' % e.output, exception=True)
+        raise
+
+
+def commit_overlays():
+    state = State().instance
+    if not state['internal'].get('v2v_data'):
+        raise RuntimeError('No internal data from v2v')
+    if not state['internal']['v2v_data'].get('saved_overlays'):
+        raise RuntimeError('No data from v2v about saved overlays')
+    try:
+        for i, ov in enumerate(state['internal']['v2v_data']['saved_overlays']):
+            logging.debug('Committing disk #%d', i)
+            key = list(state['pre_copy']['disks'])[i]
+            state['pre_copy']['disks'][key]['status'] = 'Committing'
+            state.write()
+            proc = subprocess.check_output(['qemu-img', 'commit', ov],
+                                           stderr=subprocess.STDOUT,
+                                           universal_newlines=True)
+            state['pre_copy']['disks'][key]['status'] = 'Commited'
+            state.write()
+            # At this point the file is successfully commited, so remove it
+            os.remove(ov)
     except subprocess.CalledProcessError as e:
         error('qemu-img failed with: %s' % e.output, exception=True)
         raise

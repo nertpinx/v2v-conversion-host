@@ -92,7 +92,8 @@ class TcController(object):
         # otherwise cgexec would fail
         cgroup_dir = '/sys/fs/cgroup/net_cls/%s' % self._cgroup
         atexit_command(['/usr/bin/rmdir', '-p', cgroup_dir])
-        os.makedirs(cgroup_dir)
+        # It might exist because two-phase conversions...
+        os.makedirs(cgroup_dir, exist_ok=True)
         # Change ownership of 'tasks' file so cgexec can write into it
         os.chown(
             os.path.join(cgroup_dir, 'tasks'),

@@ -123,7 +123,7 @@ class State(object):  # {{{
     def __init__(self, args=None):
         if not State.instance:
             if not args.statefile:
-                raise Exception('Parameter `statefile` required on first use')
+                raise Exception('Parameter "statefile" required on first use')
             State.instance = State.__StateObject(args)
 
     def __getattr__(self, name):
@@ -229,7 +229,7 @@ def update_change_ids(vm):
         disk_state = state['disks'][str(disk.key)]
         if 'change_ids' not in disk_state.keys():
             disk_state['change_ids'] = []
-        logging.debug('Adding change ID `%s` to the list for disk %s' %
+        logging.debug('Adding change ID "%s" to the list for disk %s' %
                       (disk.backing.changeId, disk.deviceInfo.label))
         disk_state['change_ids'].append(disk.backing.changeId)
     state.write()
@@ -269,7 +269,7 @@ def validate_state(sync_type):
             error('Cannot continue, last run did not complete successfully')
 
         if 'sync_type' not in state.keys():
-            error('Missing `sync_type` from last state')
+            error('Missing "sync_type" from last state')
         if state['sync_type'] == 'final':
             error('Nothing to do after the final sync')
 
@@ -576,23 +576,23 @@ def parse_input(args):
         data = json.load(f)
 
     if 'vm_uuid' not in data and 'vm_name' not in data:
-        raise KeyError('Either `vm_name` or `vm_uuid` must be supplied in input data')
+        raise KeyError('Either "vm_name" or "vm_uuid" must be supplied in input data')
 
     for key in ('vm_uuid', 'vm_name'):
         if key in data:
             if key not in state.keys():
                 state[key] = data[key]
             elif state[key] != data[key]:
-                raise ValueError('Mismatch in values for key `%s`: "%s" != "%s"' %
+                raise ValueError('Mismatch in values for key "%s": "%s" != "%s"' %
                                  (key, state[key], data[key]))
 
     for key in ('vmware_uri', 'vmware_fingerprint', 'pwdfile', 'statefile'):
         if key not in data:
-            raise KeyError('Missing `%s` in input data' % key)
+            raise KeyError('Missing "%s" in input data' % key)
         if state['sync_type'] == 'initial':
             state[key] = data[key]
         elif state[key] != data[key]:
-            raise ValueError('Mismatch in values for key `%s`: "%s" != "%s"' %
+            raise ValueError('Mismatch in values for key "%s": "%s" != "%s"' %
                              (key, state[key], data[key]))
 
     if 'loglevel' in data:

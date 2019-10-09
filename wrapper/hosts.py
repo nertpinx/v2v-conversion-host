@@ -4,6 +4,7 @@ import os
 import pycurl
 import re
 import six
+import stat
 import subprocess
 import sys
 import time
@@ -540,7 +541,8 @@ class OSPHost(BaseHost):
             if 'mac_address' not in mapping:
                 hard_error('Missing mac address in one of network mappings')
         if data['two_phase']:
-            hard_error('Two-phase conversion is not supported for CNV host')
+            hard_error('Two-phase conversion is not supported for OSP host')
+
         return data
 
     def _check_ip_in_network(self, ipaddr, network):
@@ -683,8 +685,8 @@ class VDSMHost(BaseHost):
                 disk_format = self.sdk.types.DiskFormat.COW
 
             for i, (disk_key, disk_data) in enumerate(disks.items()):
-                name = '%s-%03d' % (data['vm_name'], i)
-                logging.debug('Creating disk #%d: `%s`' % (i, name))
+                name = '%s-%03d' % (data['dest_vm_name'], i)
+                logging.debug('Creating disk #%d: "%s"' % (i, name))
                 disk = self.sdk.types.Disk(
                     name=name,
                     description='Created by virt-v2v-wrapper during pre_copy phase',
@@ -722,12 +724,13 @@ class VDSMHost(BaseHost):
     def attach_disks(self, data):
         state = State().instance
         vm_id = str(data['rhv_server_id'])
+        paths_to_chmod = []
         with self.sdk_connection(data) as conn:
             system_service = conn.system_service()
             vm = system_service.vms_service().vm_service(vm_id)
             ds = system_service.disks_service()
             das = vm.disk_attachments_service()
-            desc = "Temporary attachment for pre_copy of VM %s" % data['vm_name']
+            desc = "Temporary attachment for pre_copy of VM %s" % data['dest_vm_name']
             for k, v in six.iteritems(self._created_disks):
                 logging.debug('Attaching disk id=%s' % k)
                 disk_att = das.add(
@@ -745,6 +748,36 @@ class VDSMHost(BaseHost):
                 disk_internal = disks_internal[v['src_key']]
                 local_path = '/dev/disk/by-id/virtio-%s' % disk_att.id[:20]
                 disk_internal['local_path'] = local_path
+                paths_to_chmod.append(local_path)
+
+        logging.debug('Waiting for all disks to get plugged/noticed')
+        wait_for_paths = paths_to_chmod[:]
+        endt = time.time() + TIMEOUT / 30
+        while wait_for_paths:
+            for path in wait_for_paths[:]:
+                if os.path.exists(path):
+                    wait_for_paths.remove(path)
+            if endt < time.time() or not wait_for_paths:
+                break
+            time.sleep(.1)
+
+        if wait_for_paths:
+            raise RuntimeError('Timed out waiting for disks to get plugged/noticed')
+        if not paths_to_chmod:
+            raise RuntimeError('Where did our paths go?')
+
+        for disk in paths_to_chmod:
+            if not os.path.exists(local_path):
+                raise RuntimeError('File "%s" does not exist, look (output of ls -al):\n%s' %
+                                   (local_path, subprocess.check_output(['ls', '-al', '/dev/disk/by-id/'], universal_newlines=True)))
+            cur_mode = stat.S_IMODE(os.stat(local_path).st_mode)
+            new_mode = cur_mode | stat.S_IRGRP | stat.S_IWGRP
+            logging.debug('Changing permissions on "%s" from 0o%o to 0o%o',
+                          local_path, cur_mode, new_mode)
+            os.chmod(local_path, new_mode)
+            logging.debug('Changing group for "%s" to %d',
+                          local_path, self.get_gid())
+            os.chown(local_path, -1, self.get_gid())
 
     def detach_disks(self, data):
         vm_id = str(data['rhv_server_id'])
@@ -786,6 +819,35 @@ class VDSMHost(BaseHost):
         return [self.get_disk_path(disk)
                 for disk in self._attached_disks.keys()]
 
+    def finish_disks(self, data):
+        state = State().instance
+        with self.sdk_connection(data) as conn:
+            system_service = conn.system_service()
+            vms_service = system_service.vms_service()
+            vms = vms_service.list(search='name=%s' % data['dest_vm_name'])
+            if len(vms) != 1:
+                error("More than one VM exists on the destination! Panic!")
+                return False
+            vm = vms_service.vm_service(vms[0].id)
+            das = vm.disk_attachments_service()
+            ndisks = len(self._created_disks)
+            for i, v in enumerate(self._created_disks.values()):
+                logging.debug('Attaching disk %d/%d' % (i, ndisks))
+                disk_att = das.add(
+                    self.sdk.types.DiskAttachment(
+                        active=True,
+                        bootable=(i == 0),
+                        disk=v['obj'],
+                        vm=vm.get(),
+                        interface=self.sdk.types.DiskInterface.VIRTIO))
+        return True
+
+    def handle_finish(self, data, state):
+        if data['two_phase']:
+            self.detach_disks(data)
+            return self.finish_disks(data)
+        return True
+
     def handle_cleanup(self, data, state):
         if data['two_phase']:
             self._handle_two_phase_cleanup(data, state)
@@ -795,6 +857,17 @@ class VDSMHost(BaseHost):
     def _handle_two_phase_cleanup(self, data, state):
         self.detach_disks(data)
         self.remove_disks(data)
+        self._remove_vm(data)
+
+    def _remove_vm(self, data):
+        with self.sdk_connection(data) as conn:
+            vms_service = conn.system_service().vms_service()
+            vms = vms_service.list(search='name=%s' % data['dest_vm_name'])
+            # As a safety, only remove the VM if there is one of them even
+            # though the check in validate_data() should prevent anything weird
+            # happening.
+            if len(vms) == 1:
+                vms_service.vm_service(vms[0].id).remove()
 
     def _handle_simple_cleanup(self, data, state):
         with self.sdk_connection(data) as conn:
@@ -887,7 +960,7 @@ class VDSMHost(BaseHost):
         data['virtio_win'] = full_path
         logging.info("virtio_win (re)defined as: %s", data['virtio_win'])
 
-    def prepare_command(self, data, v2v_args, v2v_env, v2v_caps, two_phase=False):
+    def prepare_command(self, data, v2v_args, v2v_env, v2v_caps):
         v2v_args.extend([
             '--bridge', 'ovirtmgmt',
             '-of', data['output_format'],
@@ -911,23 +984,15 @@ class VDSMHost(BaseHost):
                 v2v_args.extend(['-oo', 'rhv-verifypeer=%s' %
                                 ('false' if data['insecure_connection'] else
                                  'true')])
-            if two_phase:
+            if data['two_phase']:
                 for disk_id in self._attached_disks.keys():
-                    v2v_args.extend(['-oo', 'rhv-image-uuid=%s' % disk_id])
+                    v2v_args.extend(['-oo', 'rhv-disk-uuid=%s' % disk_id])
 
         elif 'export_domain' in data:
             v2v_args.extend([
                 '-o', 'rhv',
                 '-os', data['export_domain'],
             ])
-        if 'XDG_RUNTIME_DIR' in v2v_env and self.get_uid() != 0:
-            # Drop XDG_RUNTIME_DIR from environment. Otherwise it would "leak"
-            # throuh our su/sudo call and would cause permissions error for
-            # virt-v2v.
-            #
-            # https://bugzilla.redhat.com/show_bug.cgi?id=967509
-            logging.info('Dropping XDG_RUNTIME_DIR from environment.')
-            del v2v_env['XDG_RUNTIME_DIR']
 
         return v2v_args, v2v_env
 
@@ -1034,6 +1099,14 @@ class VDSMHost(BaseHost):
                     except self.sdk.NotFoundError:
                         hard_error('VM %s not found,\n' +
                                    'how can this script be running on a machine that does not exist?')
+
+        # Just an extra check to fail at the earliest opportunity
+        with self.sdk_connection(data) as conn:
+            vms_service = conn.system_service().vms_service()
+            vms = vms_service.list(search='name=%s' % data['dest_vm_name'])
+            if vms:
+                hard_error('VM with name "%s" already ' % data['dest_vm_name'] +
+                           'exists on the destination')
 
         return data
 
