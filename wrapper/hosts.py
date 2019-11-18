@@ -872,7 +872,7 @@ class VDSMHost(BaseHost):
     def _handle_simple_cleanup(self, data, state):
         with self.sdk_connection(data) as conn:
             transfers_service = conn.system_service().image_transfers_service()
-            disk_ids = state['internal']['disk_ids'].values()
+            disk_ids = list(state['internal']['disk_ids'].values())
             # First stop all active transfers...
             try:
                 transfers = transfers_service.list()
@@ -890,16 +890,17 @@ class VDSMHost(BaseHost):
                     disk_ids.remove(transfer.image.id)
             except self.sdk.Error:
                 logging.exception('Failed to cancel transfers')
-            self._delete_disks(conn.system_service().disks_service(), disk_ids)
+            self._delete_disks(conn.system_service().disks_service(),
+                               disk_ids)
 
     def _delete_disks(self, disks_service, disk_ids):
         # ... then delete the uploaded disks
         logging.info('Removing disks: %r', disk_ids)
         endt = time.time() + TIMEOUT
         while len(disk_ids) > 0:
-            for disk_id in disk_ids[:]:
+            for disk_id in disk_ids:
                 try:
-                    disk_service = disks_service.disk_service(disk_id)
+                    disk_service = disks_service.disk_service(str(disk_id))
                     disk = disk_service.get()
                     if disk.status != self.sdk.types.DiskStatus.OK:
                         continue
@@ -978,7 +979,7 @@ class VDSMHost(BaseHost):
                 '-op', data['rhv_password_file'],
                 '-oo', 'rhv-cafile=%s' % data['rhv_cafile'],
                 '-oo', 'rhv-cluster=%s' % data['rhv_cluster'],
-                '-oo', 'rhv-direct',
+#                '-oo', 'rhv-direct',
             ])
             if data['insecure_connection']:
                 v2v_args.extend(['-oo', 'rhv-verifypeer=%s' %
