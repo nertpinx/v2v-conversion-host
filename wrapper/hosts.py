@@ -698,7 +698,7 @@ class VDSMHost(BaseHost):
                         disk_service.remove()
                         disk_ids.remove(disk_id)
                     except self.sdk.NotFoundError:
-                        logging.info('Disk id=%s does not exist (already ' +
+                        logging.info('Disk id=%s does not exist (already '
                                      'removed?), skipping it',
                                      disk_id)
                         disk_ids.remove(disk_id)
@@ -728,7 +728,7 @@ class VDSMHost(BaseHost):
             else:
                 if iso_domain is None:
                     # This is not an error
-                    logging.warning('ISO domain not found' +
+                    logging.warning('ISO domain not found'
                                     ' (but install_drivers is true).')
                     data['install_drivers'] = False
                     return
@@ -737,7 +737,7 @@ class VDSMHost(BaseHost):
                         iso_domain, os.listdir(iso_domain))
                 if best_name is None:
                     # Nothing found, this is not an error
-                    logging.warn('Could not find any ISO with drivers' +
+                    logging.warn('Could not find any ISO with drivers'
                                  ' (but install_drivers is true).')
                     data['install_drivers'] = False
                     return
