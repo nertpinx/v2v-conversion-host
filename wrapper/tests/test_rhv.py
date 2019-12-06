@@ -6,7 +6,7 @@ except ImportError:
     # Python2
     from mock import patch
 
-from wrapper import hosts
+from wrapper.hosts import VDSMHost
 
 
 class TestRHV(unittest.TestCase):
@@ -14,7 +14,7 @@ class TestRHV(unittest.TestCase):
 
     @patch('os.path.isfile', new=lambda _: True)
     def test_tools_iso_ordering(self):
-        host = hosts.VDSMHost()
+        host = VDSMHost()
         self.assertEqual(
                 b'virtio-win-123.iso',
                 host._filter_iso_names(b'/', [
@@ -117,7 +117,7 @@ class TestRHV(unittest.TestCase):
             '-oo', 'rhv-cluster=Default',
             '-oo', 'rhv-direct',
         ]
-        host = hosts.BaseHost.factory(hosts.BaseHost.TYPE_VDSM)
+        host = VDSMHost()
         v2v_args, v2v_env = host.prepare_command(
                 data, [], {}, [])
         self.assertEqual(v2v_args, expected)
@@ -137,7 +137,7 @@ class TestRHV(unittest.TestCase):
             '-oo', 'rhv-direct',
             '-oo', 'rhv-verifypeer=false',
         ]
-        host = hosts.BaseHost.factory(hosts.BaseHost.TYPE_VDSM)
+        host = VDSMHost()
         v2v_args, v2v_env = host.prepare_command(
                 data, [], {}, [])
         self.assertEqual(v2v_args, expected)
@@ -150,7 +150,7 @@ class TestRHV(unittest.TestCase):
             '-o', 'rhv',
             '-os', '1.2.3.4:/export/domain',
         ]
-        host = hosts.BaseHost.factory(hosts.BaseHost.TYPE_VDSM)
+        host = VDSMHost()
         v2v_args, v2v_env = host.prepare_command(
                 data, [], {}, [])
         self.assertEqual(v2v_args, expected)

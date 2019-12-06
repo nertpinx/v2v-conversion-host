@@ -33,7 +33,7 @@ import time
 
 from .state import STATE, Disk
 from .common import error, hard_error, log_command_safe
-from .hosts import BaseHost, CNVHost
+from .hosts import detect_host
 from .runners import SystemdRunner
 from .log_parser import log_parser
 from .checks import CHECKS
@@ -383,8 +383,7 @@ def main():
     else:
         STATE.daemonize = data['daemonize']
 
-    host_type = BaseHost.detect(data)
-    host = BaseHost.factory(host_type)
+    host = detect_host(data)
 
     # The logging is delayed after we now which user runs the wrapper.
     # Otherwise we would have two logs.

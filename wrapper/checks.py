@@ -1,4 +1,4 @@
-from .hosts import BaseHost
+from .hosts import VDSMHost
 
 
 VDSM_MIN_RHV = '4.2.4'  # This has to match VDSM_MIN_VERSION!
@@ -10,7 +10,7 @@ def check_rhv_guest_tools():
     Make sure there is ISO domain with at least one ISO with windows drivers.
     Preferably RHV Guest Tools ISO.
     """
-    host = BaseHost.factory(BaseHost.TYPE_VDSM)
+    host = VDSMHost()
     data = {'install_drivers': True}
     host.check_install_drivers(data)
     return ('virtio_win' in data)

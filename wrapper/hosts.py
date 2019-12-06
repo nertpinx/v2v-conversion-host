@@ -35,40 +35,23 @@ TIMEOUT = 300
 DIRECT_BACKEND = True
 
 
-class BaseHost(object):
-    TYPE_UNKNOWN = 'unknown'
-    TYPE_OSP = 'osp'
-    TYPE_CNV = 'cnv'
-    TYPE_VDSM = 'vdsm'
-    TYPE = TYPE_UNKNOWN
+# NOTE: This in reality binds output method (rhv-upload, openstack) to the
+#       host type (VDSM, EL) we run on. This is not ideal as we should be
+#       able to use any (or at least some) combinations (e.g. rhv-upload
+#       from EL system). But nobody asked for this feature yet.
+def detect_host(data):
+    if 'export_domain' in data or \
+       'rhv_url' in data:
+        return VDSMHost()
+    elif 'osp_environment' in data:
+        return OSPHost()
+    elif not STATE.daemonize:
+        return CNVHost()
+    else:
+        raise ValueError("Cannot detect type of host")
 
-    # NOTE: This in reality binds output method (rhv-upload, openstack) to the
-    #       host type (VDSM, EL) we run on. This is not ideal as we should be
-    #       able to use any (or at least some) combinations (e.g. rhv-upload
-    #       from EL system). But nobody asked for this feature yet.
-    @staticmethod
-    def detect(data):
-        if 'export_domain' in data or \
-                'rhv_url' in data:
-            return BaseHost.TYPE_VDSM
-        elif 'osp_environment' in data:
-            return BaseHost.TYPE_OSP
-        elif not data['daemonize']:
-            return BaseHost.TYPE_CNV
-        else:
-            return BaseHost.TYPE_UNKNOWN
 
-    @staticmethod
-    def factory(host_type):
-        if host_type == BaseHost.TYPE_OSP:
-            return OSPHost()
-        if host_type == BaseHost.TYPE_VDSM:
-            return VDSMHost()
-        if host_type == BaseHost.TYPE_CNV:
-            return CNVHost()
-        else:
-            raise ValueError("Cannot build host of type: %r" % host_type)
-
+class _BaseHost(object):
     def __init__(self):
         self._tag = '%s-%d' % (time.strftime('%Y%m%dT%H%M%S'), os.getpid())
 
@@ -115,12 +98,11 @@ class BaseHost(object):
         hard_error("Cannot validate data for uknown host type")
 
 
-class CNVHost(BaseHost):
-    TYPE = BaseHost.TYPE_CNV
+class CNVHost(_BaseHost):
 
     def __init__(self):
         super(CNVHost, self).__init__()
-        self._k8s = K8SCommunicator()
+        self._k8s = _K8SCommunicator()
         self._tag = '123'
 
     def create_runner(self, *args, **kwargs):
@@ -201,7 +183,7 @@ class CNVHost(BaseHost):
         return data
 
 
-class K8SCommunicator(object):
+class _K8SCommunicator(object):
 
     def __init__(self):
         self._host = os.environ['KUBERNETES_SERVICE_HOST']
@@ -268,8 +250,7 @@ class K8SCommunicator(object):
             c.close()
 
 
-class OSPHost(BaseHost):
-    TYPE = BaseHost.TYPE_OSP
+class OSPHost(_BaseHost):
 
     def create_runner(self, *args, **kwargs):
         if STATE.daemonize:
@@ -594,9 +575,8 @@ class OSPHost(BaseHost):
             return None
 
 
-class VDSMHost(BaseHost):
+class VDSMHost(_BaseHost):
     """ Encapsulates data and methods specific to oVirt/RHV environment """
-    TYPE = BaseHost.TYPE_VDSM
 
     TOOLS_PATTERNS = [
         (7, br'RHV-toolsSetup_([0-9._]+)\.iso'),
