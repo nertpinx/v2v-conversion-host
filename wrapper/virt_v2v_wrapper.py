@@ -279,15 +279,6 @@ def wrapper(host, data, v2v_caps, agent_sock=None):
     STATE.write()
 
 
-def write_password(password, password_files, uid, gid):
-    pfile = tempfile.mkstemp(suffix='.v2v')
-    password_files.append(pfile[1])
-    os.fchown(pfile[0], uid, gid)
-    os.write(pfile[0], bytes(password.encode('utf-8')))
-    os.close(pfile[0])
-    return pfile[1]
-
-
 def spawn_ssh_agent(data, uid, gid):
     cmd = [
         'setpriv', '--reuid=%d' % uid, '--regid=%d' % gid, '--clear-groups',
@@ -469,94 +460,53 @@ def main():
         # NOTE: don't use hard_error() beyond this point!
         #
 
-        # Store password(s)
-        logging.info('Writing password file(s)')
-        if 'vmware_password' in data:
-            data['vmware_password_file'] = write_password(
-                    data['vmware_password'], password_files,
-                    host.get_uid(), host.get_gid())
-        if 'rhv_password' in data:
-            data['rhv_password_file'] = write_password(data['rhv_password'],
-                                                       password_files,
-                                                       host.get_uid(),
-                                                       host.get_gid())
-        if 'ssh_key' in data:
-            data['ssh_key_file'] = write_password(data['ssh_key'],
-                                                  password_files,
-                                                  host.get_uid(),
-                                                  host.get_gid())
+        write_all_passwords(host, data, password_files)
 
-        if 'luks_keys_vault' not in data:
-            data['luks_keys_vault'] = os.path.join(
-                os.environ['HOME'],
-                '.v2v_luks_keys_vault.json'
-            )
-        if os.path.exists(data['luks_keys_vault']):
-            file_stat = os.stat(data['luks_keys_vault'])
-            if file_stat.st_uid != host.get_uid():
-                hard_error('LUKS keys vault does\'nt belong to'
-                           'user running virt-v2v-wrapper')
-            if file_stat.st_mode & stat.S_IRWXO > 0:
-                hard_error('LUKS keys vault is accessible to others')
-            if file_stat.st_mode & stat.S_IRWXG > 0:
-                hard_error('LUKS keys vault is accessible to group')
-            with open(data['luks_keys_vault']) as fp:
-                luks_keys_vault = json.load(fp)
-            if data['vm_name'] in luks_keys_vault:
-                data['luks_keys_files'] = []
-                for luks_key in luks_keys_vault[data['vm_name']]:
-                    data['luks_keys_files'].append({
-                        'device': luks_key['device'],
-                        'filename': write_password(luks_key['key'],
-                                                   password_files,
-                                                   host.get_uid(),
-                                                   host.get_gid())
-                    })
-            if 'source_disks' in data:
-                logging.debug('Initializing disk list from %r',
-                              data['source_disks'])
-                for d in data['source_disks']:
-                    STATE.disks.append(Disk(d, 0))
-                logging.debug('Internal disk list: %r', STATE.disks)
-                STATE.disk_count = len(data['source_disks'])
-            # Create state file before dumping the JSON
-            STATE.write()
+        if 'source_disks' in data:
+            logging.debug('Initializing disk list from %r',
+                          data['source_disks'])
+            for d in data['source_disks']:
+                STATE.disks.append(Disk(d, 0))
+            logging.debug('Internal disk list: %r', STATE.disks)
+            STATE.disk_count = len(data['source_disks'])
+        # Create state file before dumping the JSON
+        STATE.write()
 
-            # Send some useful info on stdout in JSON
-            print(json.dumps({
-                'v2v_log': STATE.v2v_log,
-                'wrapper_log': wrapper_log,
-                'state_file': STATE.state_file,
-                'throttling_file': throttling_file,
-            }))
+        # Send some useful info on stdout in JSON
+        print(json.dumps({
+            'v2v_log': STATE.v2v_log,
+            'wrapper_log': wrapper_log,
+            'state_file': STATE.state_file,
+            'throttling_file': throttling_file,
+        }))
 
-            # Let's get to work
-            if STATE.daemonize:
-                logging.info('Daemonizing')
-                daemonize()
-            else:
-                logging.info('Staying in foreground as requested')
-                handler = logging.StreamHandler(sys.stdout)
-                handler.setLevel(logging.DEBUG)
-                # TODO: drop junk from virt-v2v log
-                formatter = logging.Formatter(
-                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-                handler.setFormatter(formatter)
-                logging.getLogger().addHandler(handler)
-            agent_pid = None
-            agent_sock = None
-            if data['transport_method'] == 'ssh':
-                agent_pid, agent_sock = spawn_ssh_agent(
-                    data, host.get_uid(), host.get_gid())
-                if agent_pid is None:
-                    raise RuntimeError('Failed to start ssh-agent')
-            wrapper(host, data, virt_v2v_caps, agent_sock)
-            if agent_pid is not None:
-                os.kill(agent_pid, signal.SIGTERM)
-            if not STATE.failed:
-                STATE.failed = not host.handle_finish(data)
+        # Let's get to work
+        if STATE.daemonize:
+            logging.info('Daemonizing')
+            daemonize()
+        else:
+            logging.info('Staying in foreground as requested')
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.DEBUG)
+            # TODO: drop junk from virt-v2v log
+            formatter = logging.Formatter(
+                '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            logging.getLogger().addHandler(handler)
+        agent_pid = None
+        agent_sock = None
+        if data['transport_method'] == 'ssh':
+            agent_pid, agent_sock = spawn_ssh_agent(
+                data, host.get_uid(), host.get_gid())
+            if agent_pid is None:
+                raise RuntimeError('Failed to start ssh-agent')
+        wrapper(host, data, virt_v2v_caps, agent_sock)
+        if agent_pid is not None:
+            os.kill(agent_pid, signal.SIGTERM)
+        if not STATE.failed:
+            STATE.failed = not host.handle_finish(data)
     except Exception as e:
-        error_name = e.args and e.args[0] or "Wrapper failure"
+        error_name = e.args[0] if e.args else "Wrapper failure"
         error(error_name, 'An error occured, finishing state file...',
               exception=True)
         STATE.failed = True
@@ -565,14 +515,53 @@ def main():
         raise
 
     finally:
-        finish(password_files)
+        finish(host, data, password_files)
 
     logging.info('Finished')
     if STATE.failed:
         sys.exit(2)
 
 
-def finish(password_files):
+def write_all_passwords(host, data, password_files):
+    # Store password(s)
+    logging.info('Writing password file(s)')
+
+    def write_password(password):
+        pfile = tempfile.mkstemp(suffix='.v2v')
+        password_files.append(pfile[1])
+        os.fchown(pfile[0], host.get_uid(), host.get_gid())
+        os.write(pfile[0], bytes(password.encode('utf-8')))
+        os.close(pfile[0])
+        return pfile[1]
+
+    for pwd in 'vmware_password', 'rhv_password', 'ssh_key':
+        if pwd in data:
+            data[pwd + '_file'] = write_password(data[pwd])
+
+    if 'luks_keys_vault' not in data:
+        data['luks_keys_vault'] = os.path.join(os.environ['HOME'],
+                                               '.v2v_luks_keys_vault.json')
+    if os.path.exists(data['luks_keys_vault']):
+        file_stat = os.stat(data['luks_keys_vault'])
+        if file_stat.st_uid != host.get_uid():
+            hard_error('LUKS keys vault does not belong to'
+                       'user running virt-v2v-wrapper')
+        if file_stat.st_mode & stat.S_IRWXO > 0:
+            hard_error('LUKS keys vault is accessible to others')
+        if file_stat.st_mode & stat.S_IRWXG > 0:
+            hard_error('LUKS keys vault is accessible to group')
+        with open(data['luks_keys_vault']) as fp:
+            luks_keys_vault = json.load(fp)
+        if data['vm_name'] in luks_keys_vault:
+            data['luks_keys_files'] = []
+            for luks_key in luks_keys_vault[data['vm_name']]:
+                data['luks_keys_files'].append({
+                    'device': luks_key['device'],
+                    'filename': write_password(luks_key['key'])
+                })
+
+
+def finish(host, data, password_files):
     if STATE.failed:
         # Perform cleanup after failed conversion
         logging.debug('Cleanup phase')
