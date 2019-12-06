@@ -419,7 +419,6 @@ def main():
     logging.debug("virt-v2v capabilities: %r" % virt_v2v_caps)
 
     try:
-
         # Make sure all the needed keys are in data. This is rather poor
         # validation, but...
         if 'vm_name' not in data:
@@ -513,8 +512,6 @@ def main():
                                                    host.get_uid(),
                                                    host.get_gid())
                     })
-
-        try:
             if 'source_disks' in data:
                 logging.debug('Initializing disk list from %r',
                               data['source_disks'])
@@ -558,54 +555,46 @@ def main():
                 os.kill(agent_pid, signal.SIGTERM)
             if not STATE.failed:
                 STATE.failed = not host.handle_finish(data)
-        except Exception as e:
-            # No need to log the exception, it will get logged below
-            error(e.args[0],
-                  'An error occured, finishing state file...',
-                  exception=True)
-            STATE.failed = True
-            STATE.write()
-            raise
-        finally:
-            if STATE.failed:
-                # Perform cleanup after failed conversion
-                logging.debug('Cleanup phase')
-                try:
-                    host.handle_cleanup(data)
-                finally:
-                    STATE.finished = True
-                    STATE.write()
-
-        # Remove password files
-        logging.info('Removing password files')
-        for f in password_files:
-            try:
-                os.remove(f)
-            except OSError:
-                error('Error removing password file(s)',
-                      'Error removing password file: %s' % f,
-                      exception=True)
-
-        STATE.finished = True
+    except Exception as e:
+        error_name = e.args and e.args[0] or "Wrapper failure"
+        error(error_name, 'An error occured, finishing state file...',
+              exception=True)
+        STATE.failed = True
         STATE.write()
-
-    except Exception:
-        logging.exception('Wrapper failure')
-        # Remove password files
-        logging.info('Removing password files')
-        for f in password_files:
-            try:
-                os.remove(f)
-            except OSError:
-                error('Error removing password file(s)',
-                      'Error removing password file: %s' % f,
-                      exception=True)
         # Re-raise original error
         raise
+
+    finally:
+        finish(password_files)
 
     logging.info('Finished')
     if STATE.failed:
         sys.exit(2)
+
+
+def finish(password_files):
+    if STATE.failed:
+        # Perform cleanup after failed conversion
+        logging.debug('Cleanup phase')
+        # Need to clean up as much as possible, even if only one tiny clean up
+        # function fails
+        try:
+            host.handle_cleanup(data)
+        except Exception:
+            pass
+
+    # Remove password files
+    logging.info('Removing password files')
+    for f in password_files:
+        try:
+            os.remove(f)
+        except OSError:
+            error('Error removing password file(s)',
+                  'Error removing password file: %s' % f,
+                  exception=True)
+
+    STATE.finished = True
+    STATE.write()
 
 
 # }}}
