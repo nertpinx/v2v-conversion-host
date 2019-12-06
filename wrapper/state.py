@@ -99,6 +99,7 @@ class _State(_StateObject):
             'display_name': None,
             'ports': [],
             'throttling_file': None,
+            'duplicate_logs': False,
         }
         self.last_message = None
         self.pid = None

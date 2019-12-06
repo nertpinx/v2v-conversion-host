@@ -254,7 +254,7 @@ def wrapper(host, data, v2v_caps, agent_sock=None):
     try:
         STATE.started = True
         STATE.write()
-        with log_parser(isinstance(host, CNVHost)) as parser:
+        with log_parser(STATE.internal['duplicate_logs']) as parser:
             while runner.is_running():
                 parser.parse()
                 STATE.write()
@@ -378,9 +378,7 @@ def main():
     data = json.load(sys.stdin)
 
     # Fill in defaults
-    if 'daemonize' not in data:
-        data['daemonize'] = STATE.daemonize
-    else:
+    if 'daemonize' in data:
         STATE.daemonize = data['daemonize']
 
     host = detect_host(data)
@@ -536,7 +534,7 @@ def main():
             }))
 
             # Let's get to work
-            if 'daemonize' not in data or data['daemonize']:
+            if STATE.daemonize:
                 logging.info('Daemonizing')
                 daemonize()
             else:
