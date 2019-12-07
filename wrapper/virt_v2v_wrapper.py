@@ -514,8 +514,6 @@ def main():
         # Re-raise original error
         raise
 
-    finally:
-        finish(host, data, password_files)
 
     logging.info('Finished')
     if STATE.failed:
