@@ -4,7 +4,7 @@ import json
 import stat
 
 
-class _StateObject(object):
+class StateObject(object):
     def as_dict(self):
         hidden = ['internal'] + getattr(self, '_hidden', [])
         slots = [key for key in getattr(self, '__slots__', self.__dict__)
@@ -17,12 +17,12 @@ class _StateEncoder(json.JSONEncoder):
     def default(self, obj):  # pylint: disable=method-hidden
         if isinstance(obj, bytes):
             return obj.decode()
-        if isinstance(obj, _StateObject):
+        if isinstance(obj, StateObject):
             return obj.as_dict()
         return json.JSONEncoder.default(self, obj)
 
 
-class Disk(_StateObject):
+class Disk(StateObject):
     """
     Represents one disk instance (to be) copied.
     """
@@ -40,7 +40,7 @@ class Disk(_StateObject):
         return "Disk(path=%s, progress=%.2f)" % (self.path, self.progress)
 
 
-class _State(_StateObject):
+class _State(StateObject):
     """
     State object using a dict for data storage.
 
@@ -64,6 +64,7 @@ class _State(_StateObject):
         'internal',
         'last_message',
         'pid',
+        'pre_copy',
         'return_code',
         'started',
         'throttling',
@@ -103,6 +104,7 @@ class _State(_StateObject):
         }
         self.last_message = None
         self.pid = None
+        self.pre_copy = None
         self.started = None
         self.return_code = None
         # Does it make sense to create a throttling class?

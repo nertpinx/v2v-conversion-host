@@ -37,7 +37,7 @@ from .hosts import detect_host
 from .runners import SystemdRunner
 from .log_parser import log_parser
 from .checks import CHECKS
-from wrapper import pre_copy
+from . import pre_copy
 
 # py2
 DEVNULL = getattr(subprocess, 'DEVNULL', open(os.devnull, 'r+'))
