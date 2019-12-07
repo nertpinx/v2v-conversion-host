@@ -37,6 +37,7 @@ from .hosts import detect_host
 from .runners import SystemdRunner
 from .log_parser import log_parser
 from .checks import CHECKS
+from wrapper import pre_copy
 
 # py2
 DEVNULL = getattr(subprocess, 'DEVNULL', open(os.devnull, 'r+'))
@@ -457,10 +458,13 @@ def main():
                 data, host.get_uid(), host.get_gid())
             if agent_pid is None:
                 raise RuntimeError('Failed to start ssh-agent')
+        host.prepare_disks(data)
+        pre_copy.copy_disks(data)
         wrapper(host, data, virt_v2v_caps, agent_sock)
         if agent_pid is not None:
             os.kill(agent_pid, signal.SIGTERM)
         if not STATE.failed:
+            pre_copy.finish(data)
             STATE.failed = not host.handle_finish(data)
     except Exception as e:
         error_name = e.args[0] if e.args else "Wrapper failure"
@@ -523,6 +527,7 @@ def validate_data(host, data):
     else:
         data['install_drivers'] = False
 
+    pre_copy.prepare(data)
     host.validate_data(data)
 
 
@@ -573,6 +578,10 @@ def finish(host, data, password_files):
         # function fails
         try:
             host.handle_cleanup(data)
+        except Exception:
+            pass
+        try:
+            pre_copy.cleanup(data)
         except Exception:
             pass
 
