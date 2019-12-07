@@ -99,8 +99,9 @@ class _BaseHost(object):
 
     def prepare_disks(self, data):
         """ Validate input data, fill in defaults, etc """
-        hard_error("Host implementation did not forbid two phase conversion, "
-                   "but did not implement `prepare_disks`")
+        if data['two_phase']:
+            hard_error("Host implementation did not forbid two phase "
+                       "conversion, but did not implement `prepare_disks`")
 
 
 class CNVHost(_BaseHost):

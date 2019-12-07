@@ -410,47 +410,52 @@ def main():
         hard_error('Could not get virt-v2v capabilities.')
     logging.debug("virt-v2v capabilities: %r" % virt_v2v_caps)
 
+    validate_data(host, data)
+
+    #
+    # NOTE: don't use hard_error() beyond this point!
+    #
+
+    if 'source_disks' in data:
+        logging.debug('Initializing disk list from %r',
+                      data['source_disks'])
+        for d in data['source_disks']:
+            STATE.disks.append(Disk(d, 0))
+        logging.debug('Internal disk list: %r', STATE.disks)
+        STATE.disk_count = len(data['source_disks'])
+
+    # Create state file before dumping the JSON
+    STATE.write()
+
+    # Send some useful info on stdout in JSON
+    print(json.dumps({
+        'v2v_log': STATE.v2v_log,
+        'wrapper_log': wrapper_log,
+        'state_file': STATE.state_file,
+        'throttling_file': throttling_file,
+    }))
+
+    # Let's get to work
+    if STATE.daemonize:
+        logging.info('Daemonizing')
+        daemonize()
+    else:
+        logging.info('Staying in foreground as requested')
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.DEBUG)
+        # TODO: drop junk from virt-v2v log
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        logging.getLogger().addHandler(handler)
+
     try:
-        validate_data(host, data)
+        write_all_passwords(host, data, password_files)
 
         #
         # NOTE: don't use hard_error() beyond this point!
         #
 
-        write_all_passwords(host, data, password_files)
-
-        if 'source_disks' in data:
-            logging.debug('Initializing disk list from %r',
-                          data['source_disks'])
-            for d in data['source_disks']:
-                STATE.disks.append(Disk(d, 0))
-            logging.debug('Internal disk list: %r', STATE.disks)
-            STATE.disk_count = len(data['source_disks'])
-
-        # Create state file before dumping the JSON
-        STATE.write()
-
-        # Send some useful info on stdout in JSON
-        print(json.dumps({
-            'v2v_log': STATE.v2v_log,
-            'wrapper_log': wrapper_log,
-            'state_file': STATE.state_file,
-            'throttling_file': throttling_file,
-        }))
-
-        # Let's get to work
-        if STATE.daemonize:
-            logging.info('Daemonizing')
-            daemonize()
-        else:
-            logging.info('Staying in foreground as requested')
-            handler = logging.StreamHandler(sys.stdout)
-            handler.setLevel(logging.DEBUG)
-            # TODO: drop junk from virt-v2v log
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            logging.getLogger().addHandler(handler)
         agent_pid = None
         agent_sock = None
         if data['transport_method'] == 'ssh':
@@ -474,7 +479,6 @@ def main():
         STATE.write()
         # Re-raise original error
         raise
-
     finally:
         finish(host, data, password_files)
 
@@ -537,9 +541,9 @@ def write_all_passwords(host, data, password_files):
 
     def write_password(password):
         pfile = tempfile.mkstemp(suffix='.v2v')
-        password_files.append(pfile[1])
         os.fchown(pfile[0], host.get_uid(), host.get_gid())
         os.write(pfile[0], bytes(password.encode('utf-8')))
+        password_files.append(pfile[1])
         os.close(pfile[0])
         return pfile[1]
 
@@ -579,11 +583,12 @@ def finish(host, data, password_files):
         try:
             host.handle_cleanup(data)
         except Exception:
-            pass
+            logging.exception("Got exception while cleaning up data")
+
         try:
             pre_copy.cleanup(data)
         except Exception:
-            pass
+            logging.exception("Got exception while cleaning up data")
 
     # Remove password files
     logging.info('Removing password files')
