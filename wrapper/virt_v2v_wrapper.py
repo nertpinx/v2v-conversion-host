@@ -410,51 +410,7 @@ def main():
     logging.debug("virt-v2v capabilities: %r" % virt_v2v_caps)
 
     try:
-        # Make sure all the needed keys are in data. This is rather poor
-        # validation, but...
-        if 'vm_name' not in data:
-            hard_error('Missing vm_name')
-
-        # Transports (only VDDK for now)
-        if 'transport_method' not in data:
-            hard_error('No transport method specified')
-        if data['transport_method'] not in ('ssh', 'vddk'):
-            hard_error('Unknown transport method: %s' %
-                       data['transport_method'])
-
-        if data['transport_method'] == 'vddk':
-            for k in [
-                    'vmware_fingerprint',
-                    'vmware_uri',
-                    'vmware_password',
-                    ]:
-                if k not in data:
-                    hard_error('Missing argument: %s' % k)
-
-        # Network mappings
-        if 'network_mappings' in data:
-            if isinstance(data['network_mappings'], list):
-                for mapping in data['network_mappings']:
-                    if not all(
-                            k in mapping for k in ("source", "destination")):
-                        hard_error('Both "source" and "destination"'
-                                   ' must be provided in network mapping')
-            else:
-                hard_error('"network_mappings" must be an array')
-        else:
-            data['network_mappings'] = []
-
-        # Virtio drivers
-        if 'virtio_win' in data:
-            # This is for backward compatibility
-            data['install_drivers'] = True
-        if 'install_drivers' in data:
-            host.check_install_drivers(data)
-        else:
-            data['install_drivers'] = False
-
-        # Method dependent validation
-        data = host.validate_data(data)
+        validate_data(host, data)
 
         #
         # NOTE: don't use hard_error() beyond this point!
@@ -469,6 +425,7 @@ def main():
                 STATE.disks.append(Disk(d, 0))
             logging.debug('Internal disk list: %r', STATE.disks)
             STATE.disk_count = len(data['source_disks'])
+
         # Create state file before dumping the JSON
         STATE.write()
 
@@ -514,10 +471,59 @@ def main():
         # Re-raise original error
         raise
 
+    finally:
+        finish(host, data, password_files)
 
     logging.info('Finished')
     if STATE.failed:
         sys.exit(2)
+
+
+def validate_data(host, data):
+    # Make sure all the needed keys are in data. This is rather poor
+    # validation, but...
+    if 'vm_name' not in data:
+        hard_error('Missing vm_name')
+
+    # Transports (only VDDK for now)
+    if 'transport_method' not in data:
+        hard_error('No transport method specified')
+    if data['transport_method'] not in ('ssh', 'vddk'):
+        hard_error('Unknown transport method: %s' %
+                   data['transport_method'])
+
+    if data['transport_method'] == 'vddk':
+        for k in [
+                'vmware_fingerprint',
+                'vmware_uri',
+                'vmware_password',
+                ]:
+            if k not in data:
+                hard_error('Missing argument: %s' % k)
+
+    # Network mappings
+    if 'network_mappings' in data:
+        if isinstance(data['network_mappings'], list):
+            for mapping in data['network_mappings']:
+                if not all(
+                        k in mapping for k in ("source", "destination")):
+                    hard_error('Both "source" and "destination"'
+                               ' must be provided in network mapping')
+        else:
+            hard_error('"network_mappings" must be an array')
+    else:
+        data['network_mappings'] = []
+
+    # Virtio drivers
+    if 'virtio_win' in data:
+        # This is for backward compatibility
+        data['install_drivers'] = True
+    if 'install_drivers' in data:
+        host.check_install_drivers(data)
+    else:
+        data['install_drivers'] = False
+
+    host.validate_data(data)
 
 
 def write_all_passwords(host, data, password_files):
