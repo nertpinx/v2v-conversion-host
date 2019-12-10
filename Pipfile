@@ -10,6 +10,7 @@ name = "pypi"
 ovirt-engine-sdk-python = "*"
 pycurl = "*"
 six = "*"
+pyvmomi = "*"
 
 
 [dev-packages]

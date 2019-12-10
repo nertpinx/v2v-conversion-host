@@ -23,7 +23,8 @@ setup(
     },
     install_requires=[
         'pycurl',
-        'six'
+        'six',
+        'pyvmomi',
     ],
     extras_require={
         'ovirt': 'ovirt-engine-sdk-python',
