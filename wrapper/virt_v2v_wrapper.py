@@ -32,12 +32,12 @@ import tempfile
 import time
 
 from .state import STATE, Disk
-from .common import error, hard_error, log_command_safe
+from .common import error, hard_error, log_command_safe, VDDK_LIBDIR
 from .hosts import detect_host
 from .runners import SystemdRunner
 from .log_parser import log_parser
 from .checks import CHECKS
-from . import pre_copy
+from .pre_copy import PreCopy
 
 # py2
 DEVNULL = getattr(subprocess, 'DEVNULL', open(os.devnull, 'r+'))
@@ -102,7 +102,7 @@ def prepare_command(data, v2v_caps, agent_sock=None):
             '-i', 'libvirt',
             '-ic', data['vmware_uri'],
             '-it', 'vddk',
-            '-io', 'vddk-libdir=%s' % '/opt/vmware-vix-disklib-distrib',
+            '-io', 'vddk-libdir=%s' % VDDK_LIBDIR,
             '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
             '--password-file', data['vmware_password_file'],
             ])
@@ -236,6 +236,15 @@ def wrapper(host, data, v2v_caps, agent_sock=None):
     v2v_args, v2v_env = prepare_command(data, v2v_caps, agent_sock)
     v2v_args, v2v_env = host.prepare_command(
         data, v2v_args, v2v_env, v2v_caps)
+
+    if 'XDG_RUNTIME_DIR' in v2v_env and host.get_uid() != 0:
+        # Drop XDG_RUNTIME_DIR from environment. Otherwise it would "leak"
+        # throuh our su/sudo call and would cause permissions error for
+        # virt-v2v.
+        #
+        # https://bugzilla.redhat.com/show_bug.cgi?id=967509
+        logging.info('Dropping XDG_RUNTIME_DIR from environment.')
+        del v2v_env['XDG_RUNTIME_DIR']
 
     logging.info('Starting virt-v2v:')
     log_command_safe(v2v_args, v2v_env)
@@ -382,8 +391,8 @@ def main():
     STATE.v2v_log = os.path.join(log_dirs[0], 'v2v-import-%s.log' % log_tag)
     STATE.machine_readable_log = os.path.join(
         log_dirs[0], 'v2v-import-%s-mr.log' % log_tag)
-    wrapper_log = os.path.join(log_dirs[1],
-                               'v2v-import-%s-wrapper.log' % log_tag)
+    STATE.wrapper_log = os.path.join(log_dirs[1],
+                                     'v2v-import-%s-wrapper.log' % log_tag)
     STATE.state_file = os.path.join(STATE_DIR, 'v2v-import-%s.state' % log_tag)
     throttling_file = os.path.join(STATE_DIR,
                                    'v2v-import-%s.throttle' % log_tag)
@@ -393,7 +402,8 @@ def main():
         + ' %(message)s (%(module)s:%(lineno)d)'
     logging.basicConfig(
         level=LOG_LEVEL,
-        filename=wrapper_log,
+        filename=STATE.wrapper_log,
+        filemode='a',
         format=log_format)
 
     logging.info('Wrapper version %s, uid=%d', VERSION, os.getuid())
@@ -411,6 +421,8 @@ def main():
     logging.debug("virt-v2v capabilities: %r" % virt_v2v_caps)
 
     validate_data(host, data)
+    if STATE.pre_copy:
+        STATE.pre_copy.init_disk_data()
 
     #
     # NOTE: don't use hard_error() beyond this point!
@@ -430,7 +442,7 @@ def main():
     # Send some useful info on stdout in JSON
     print(json.dumps({
         'v2v_log': STATE.v2v_log,
-        'wrapper_log': wrapper_log,
+        'wrapper_log': STATE.wrapper_log,
         'state_file': STATE.state_file,
         'throttling_file': throttling_file,
     }))
@@ -463,13 +475,16 @@ def main():
                 data, host.get_uid(), host.get_gid())
             if agent_pid is None:
                 raise RuntimeError('Failed to start ssh-agent')
-        host.prepare_disks(data)
-        pre_copy.copy_disks(data)
-        wrapper(host, data, virt_v2v_caps, agent_sock)
+        if STATE.pre_copy:
+            host.prepare_disks(data)
+            STATE.pre_copy.copy_disks(data)
+        if not STATE.failed:
+            wrapper(host, data, virt_v2v_caps, agent_sock)
         if agent_pid is not None:
             os.kill(agent_pid, signal.SIGTERM)
         if not STATE.failed:
-            pre_copy.finish(data)
+            if STATE.pre_copy:
+                STATE.pre_copy.finish()
             STATE.failed = not host.handle_finish(data)
     except Exception as e:
         error_name = e.args[0] if e.args else "Wrapper failure"
@@ -531,8 +546,11 @@ def validate_data(host, data):
     else:
         data['install_drivers'] = False
 
-    pre_copy.prepare(data)
+    if data['two_phase'] and not data['install_drivers'] and not 'asdf':
+        hard_error('Two phase conversion requires VirtI/O drivers')
+
     host.validate_data(data)
+    STATE.pre_copy = PreCopy(data)
 
 
 def write_all_passwords(host, data, password_files):
@@ -585,10 +603,11 @@ def finish(host, data, password_files):
         except Exception:
             logging.exception("Got exception while cleaning up data")
 
-        try:
-            pre_copy.cleanup(data)
-        except Exception:
-            logging.exception("Got exception while cleaning up data")
+        if STATE.pre_copy:
+            try:
+                STATE.pre_copy.cleanup()
+            except Exception:
+                logging.exception("Got exception while cleaning up data")
 
     # Remove password files
     logging.info('Removing password files')

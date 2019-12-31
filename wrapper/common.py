@@ -1,11 +1,17 @@
 import atexit
 import copy
 import logging
+import os
 import re
+import stat
 import subprocess
 import sys
 
 from .state import STATE
+
+
+VDDK_LIBDIR = '/opt/vmware-vix-disklib-distrib'
+VDDK_LIBRARY_PATH = '/opt/vmware-vix-disklib-distrib/lib64'
 
 
 def atexit_command(cmd):
@@ -96,3 +102,21 @@ def log_command_safe(args, env, log=None):
     if log is None:
         log = logging
     log.info('Executing command: %r, environment: %r', args, env)
+
+
+def add_perms_to_file(path, modes, uid=-1, gid=-1):
+    cur_mode = stat.S_IMODE(os.stat(path).st_mode)
+    new_mode = cur_mode | modes
+
+    if uid != -1 or gid != -1:
+        logging.debug('Changing uid:gid of "%s" to %s:%s' %
+                      (path, uid, gid))
+        os.chown(path, uid, gid)
+
+    logging.debug('Changing permissions on "%s" from 0x%x to 0x%x' %
+                  (path, cur_mode, new_mode))
+    os.chmod(path, new_mode)
+
+
+def nbd_uri_from_unix_socket(sock_path):
+    return 'nbd+unix:///?socket=%s' % sock_path

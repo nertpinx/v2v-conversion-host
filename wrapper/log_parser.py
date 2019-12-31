@@ -40,6 +40,7 @@ class OutputParser(object):
         br' \'?virt_v2v_disk_index=(?P<volume>[0-9]+)/[0-9]+.*'
         br' \'?(?P<uuid>[a-fA-F0-9-]*)\'?$')
     SSH_VMX_GUEST_NAME = re.compile(br'^displayName = "(.*)"$')
+    OVERLAY_PATH_RE = re.compile(br'asdf \'(?P<uuid>[a-fA-F0-9-]*)\'')
 
     def __init__(self, duplicate=False):
         # Wait for the log files to appear
@@ -53,6 +54,7 @@ class OutputParser(object):
         self._current_disk = None
         self._current_path = None
         self._duplicate = duplicate
+        self._current_overlay_disk = 0
 
     def __del__(self):
         self._log.close()
@@ -185,6 +187,15 @@ class OutputParser(object):
             vm_id = m.group('uuid').decode('utf-8')
             STATE.vm_id = vm_id
             logging.info('Created VM with id=%s', vm_id)
+
+        # RHV VM UUID
+        m = self.OVERLAY_PATH_RE.search(line)
+        if m is not None:
+            path = m.group('path').decode('utf-8')
+            STATE.disks[self._current_overlay_disk].overlay = path
+            logging.debug('Attaching overlay path "%s" to disk "%d"' %
+                          (path, self._current_overlay_disk))
+            self._current_overlay_disk += 1
 
     def close(self):
         self._log.close()
