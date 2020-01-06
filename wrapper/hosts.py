@@ -1054,24 +1054,24 @@ class VDSMHost(_BaseHost):
                                  data['allocation'])
 
                 # We cannot reliably check that we are running on a VM with the
-                # specified UUID in `rhv_server_id` (otherwise we would not
+                # specified UUID in `conversion_vm_id` (otherwise we would not
                 # need the ID in the input in the first place), but we can at
                 # least fail early if the machine does not exist or if it is
                 # not up.
                 if data['two_phase']:
                     service = c.system_service().vms_service()
-                    vm = service.vm_service(str(data['rhv_server_id']))
+                    vm = service.vm_service(str(data['conversion_vm_id']))
                     try:
                         if vm.get().status != self.sdk.types.VmStatus.UP:
                             hard_error('VM %s is not running,\n'
                                        'how can this script be running on '
                                        'a machine that is not up?' %
-                                       data['rhv_server_id'])
+                                       data['conversion_vm_id'])
                     except self.sdk.NotFoundError:
                         hard_error('VM %s not found,\n'
                                    'how can this script be running on a '
                                    'machine that does not exist?' %
-                                   data['rhv_server_id'])
+                                   data['conversion_vm_id'])
                     self._conversion_vm = vm
 
         self._vm_name = data['vm_name']
