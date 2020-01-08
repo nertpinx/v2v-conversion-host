@@ -11,7 +11,7 @@ import time
 import xml.etree.ElementTree as ETree
 
 from collections import OrderedDict
-from six.moves.urllib.parse import urlparse, unquote
+from six.moves.urllib.parse import urlparse, unquote, parse_qs
 from pyVim.connect import SmartConnect, SmartConnectNoSSL, Disconnect
 from pyVmomi import vim  # pylint: disable=no-name-in-module; dynamic module
 
@@ -41,6 +41,11 @@ class _VMWare(object):
     ]
 
     def __init__(self, data):
+        self._conn = None
+        self._vm = None
+        self._vm_name = data['vm_name']
+        self.insecure = False
+
         self._uri = data['vmware_uri']
         uri = urlparse(self._uri)
 
@@ -48,15 +53,27 @@ class _VMWare(object):
         self.port = uri.port
         self.user = 'administrator@vsphere.local'
         self._password = data['vmware_password']
-        self.thumbprint = data.get('vmware_thumbprint')
+        self.thumbprint = data['vmware_fingerprint']
         if uri.username:
             self.user = unquote(uri.username)
 
-        self.insecure = data.get('insecure_connection', False)
+        no_verify = parse_qs(uri.query).get('no_verify', [])
+        if no_verify:
+            if len(no_verify) > 1:
+                raise ValueError('Multiple values for "no_verify"')
 
-        self._conn = None
-        self._vm = None
-        self._vm_name = data['vm_name']
+            try:
+                val = int(no_verify[0])
+            except ValueError:
+                error('Invalid value for "no_verify"')
+                raise
+
+            if val == 1:
+                self.insecure = True
+            elif val == 0:
+                self.insecure = False
+            else:
+                raise ValueError('Invalid value for "no_verify"')
 
     def _connect(self):
         "Connect to the remote VMWare server"
@@ -68,15 +85,15 @@ class _VMWare(object):
             'host': self.server,
             'user': self.user,
             'pwd': self._password,
+            'thumbprint': self.thumbprint,
         }
         if self.port is not None:
             connect_args['port'] = self.port
-        if self.thumbprint is not None:
-            connect_args['thumbprint'] = self.thumbprint
 
         if self.insecure:
             self._conn = SmartConnectNoSSL(**connect_args)
-        self._conn = SmartConnect(**connect_args)
+        else:
+            self._conn = SmartConnect(**connect_args)
 
     def _disconnect(self):
         if self._conn is None:
@@ -151,7 +168,8 @@ class _PreCopyDisk(StateObject):
         'overlay',
         'path',
         'pidfile',
-        'proc',
+        'proc_nbdkit',
+        'proc_qemu',
         'sock',
         'vmware_object',
     ]
@@ -162,32 +180,34 @@ class _PreCopyDisk(StateObject):
         self.local_path = None
         self.path = disk.backing.fileName
         self.size = int(disk.capacityInBytes)
-        self.status = 'prepared'
+        self.status = 'Prepared'
         self.key = disk.key
         self.vmware_object = disk
 
         self.sock = os.path.join(tmp_dir, 'nbdkit-%s.sock' % self.key)
         self.pidfile = os.path.join(tmp_dir, 'nbdkit-%s.pid' % self.key)
-        self.proc = None
+        self.proc_nbdkit = None
+        self.proc_qemu = None
+        self.overlay = None
 
 
 class PreCopy(StateObject):
     __slots__ = [
         'data',
-        'output_format',
         '_tmp_dir',
         '_tmp_dir_path',
         'vmware',
 
         'disks',
+        'overlays',
     ]
 
     _hidden = [
         'data',
-        'output_format',
         '_tmp_dir',
         '_tmp_dir_path',
         'vmware',
+        'overlays',
     ]
 
     @staticmethod
@@ -197,23 +217,24 @@ class PreCopy(StateObject):
         return super(PreCopy, cls).__new__(cls)
 
     def __init__(self, data):
-        self.vmware = _VMWare(data)
         self.output_format = data['output_format']
-        # TODO: [py2] Just use the py3 version
-        if six.PY3:
+        # TODO: [py2] Just use the py3 version (and remove the _path)
+        if six.PY3 and False:
             self._tmp_dir = tempfile.TemporaryDirectory(prefix='v2v-')
             self._tmp_dir_path = self._tmp_dir.name
         else:
             self._tmp_dir_path = tempfile.mkdtemp(prefix='v2v-')
 
+        self.vmware = _VMWare(data)
+
         # Let others browse it
         add_perms_to_file(self._tmp_dir_path, stat.S_IXOTH, -1, -1)
 
-    def __del__(self):
+    def __del_asdf(self):
         # TODO: [py2] Just use the py3 version
-        if six.PY3:
+        if six.PY3 and False:
             # This is mostly for tests, but neither the object nor the
-            # TemporaryDirectory object should be used multiple times.
+            # TemporaryDirectory object should be used multiple times anyway.
             if self._tmp_dir is not None:
                 self._tmp_dir.cleanup()
         else:
@@ -229,7 +250,9 @@ class PreCopy(StateObject):
             logging.warning("VM should not have any previous snapshots")
         disks = self.vmware.get_disks_from_config(vm.config)
 
-        disks = [(str(d.key), _PreCopyDisk(d, self._tmp_dir)) for d in disks]
+        def disk_pair(d):
+            return str(d.key), _PreCopyDisk(d, self._tmp_dir_path)
+        disks = [disk_pair(d) for d in disks]
         self.disks = OrderedDict(disks)
 
         STATE.write()
@@ -243,7 +266,7 @@ class PreCopy(StateObject):
                 self.fixed = False
 
         disk_map = {disk.path: DiskToFix(disk.local_path)
-                    for disk in self.disks.items()}
+                    for disk in self.disks.values()}
         tree = ETree.fromstring(domxml)
         for disk in tree.find('devices').findall('disk'):
             src = disk.find('source')
@@ -258,7 +281,10 @@ class PreCopy(StateObject):
             # disk.set('type', 'block')
             # del src.attrib['file']
             # src.set('dev', dm['path'])
+            driver = ETree.Element('driver')
+            driver.set('type', 'raw')
             src.set('file', disk_data.path)
+            disk.append(driver)
             disk_data.fixed = True
 
         # Check that all paths were changed
@@ -273,11 +299,18 @@ class PreCopy(StateObject):
         xmlfile = os.path.join(self._tmp_dir_path, 'vm.xml')
         with open(xmlfile, 'wb') as f:
             f.write(self._fix_disks(self.vmware.get_domxml()))
+        return xmlfile
 
     def _get_nbdkit_cmd(self, disk, vmware_password_file):
         env = 'LD_LIBRARY_PATH=%s' % VDDK_LIBRARY_PATH
         if 'LD_LIBRARY_PATH' in os.environ:
             env += ':' + os.environ['LD_LIBRARY_PATH']
+
+        print('Starting nbdkit for disk {}'.format(disk))
+        print(os.stat(os.path.dirname(disk.sock)))
+        print(os.stat(os.path.dirname(disk.pidfile)))
+        print(os.stat(vmware_password_file))
+        print(os.stat(VDDK_LIBDIR))
 
         nbdkit_cmd = [
             'env',
@@ -291,32 +324,31 @@ class PreCopy(StateObject):
             '--foreground',
             '--exportname=/',
             '--filter=log',
-            '--filter=cacheextents',
-            '--filter=retry',
+            '--filter=cacheextents',  # asdf: Only enable if available?
+            '--filter=retry',  # asdf: Only enable if available?
             'vddk',
-            # need to use _moId, but it's protected
-            'vm=moref=%s' % self.vmware.get_vm().moId,
+            # pylint: disable=protected-access
+            'vm=moref=%s' % self.vmware.get_vm()._moId,
             'server=%s' % self.vmware.server,
-            # TODO: asdf
+            'password=+%s' % vmware_password_file,
             'thumbprint=%s' % self.vmware.thumbprint,
-            'password=+%s' % self.vmware.password_file,
             'libdir=%s' % VDDK_LIBDIR,
             'file=%s' % disk.path,
-            'logfile=/dev/stdout',
         ]
-        if hasattr(self.vmware, 'user'):
+        if self.vmware.user:
             nbdkit_cmd.append('user=%s' % self.vmware.user)
+        nbdkit_cmd.append('logfile=/dev/stdout')
 
         return nbdkit_cmd
 
     def _start_nbdkits(self, vmware_password_file):
         paths = []
-        for disk in self.disks:
+        for disk in self.disks.values():
             cmd = self._get_nbdkit_cmd(disk, vmware_password_file)
-            logfd = open(STATE.wrapper_log, 'a')
+            logfd = open(STATE.wrapper_log, 'a', buffering=1)
             logging.debug('Starting nbdkit: %s', cmd)
             disk.proc_nbdkit = subprocess.Popen(cmd,
-                                                stdout=logfd,
+                                                stdout=_DEVNULL, # asdf
                                                 stderr=subprocess.STDOUT,
                                                 stdin=_DEVNULL)
             paths.append((disk.pidfile, disk.sock))
@@ -335,7 +367,7 @@ class PreCopy(StateObject):
             raise RuntimeError('Timed out waiting for nbdkits to initialize')
 
     def _stop_nbdkits(self):
-        for disk in self.disks:
+        for disk in self.disks.values():
             if disk.proc_nbdkit is None:
                 continue
             logging.debug('Stopping nbdkit with pid=%d', disk.proc_nbdkit.pid)
@@ -348,19 +380,19 @@ class PreCopy(StateObject):
             disk.proc_nbdkit = None
 
     def _wait_for_qemus(self, cb=None):
-        while (True for disk in self.disks if disk.proc_qemu is not None):
-            for disk in self.disks:
+        while any([d.proc_qemu is not None for d in self.disks.values()]):
+            for disk in self.disks.values():
                 if disk.proc_qemu is None:
                     continue
                 if disk.proc_qemu.poll() is None:
                     continue
-                if disk.proc_qemu.returncode != 0:
-                    error('qemu-img failed with returncode %d' %
-                          disk.proc_qemu.returncode)
-                    STATE.failed = True
+                retcode = disk.proc_qemu.returncode
                 disk.proc_qemu = None
+                if retcode != 0:
+                    error('qemu-img failed with returncode %d' % retcode)
+                    STATE.failed = True
                 if cb is not None:
-                    cb(disk)
+                    cb(disk, retcode == 0)
 
     def copy_disks(self, vmware_password_file):
         "Copy all disk data from the VMWare server to locally mounted disks."
@@ -369,11 +401,11 @@ class PreCopy(StateObject):
 
         ndisks = len(self.disks)
         cmd_templ = ['qemu-img', 'convert', '-f', 'raw',
-                     '-O', self.output_format]
-        for i, disk in enumerate(self.disks):
+                     '-O', 'raw']
+        for i, disk in enumerate(self.disks.values()):
             logging.debug('Copying disk %d/%d', i, ndisks)
             # TODO: ditch qemu-img
-            logfd = open(STATE.wrapper_log, 'a')
+            logfd = open(STATE.wrapper_log, 'a', buffering=1)
             socket_uri = nbd_uri_from_unix_socket(disk.sock)
             cmd = cmd_templ + [socket_uri, disk.local_path]
             try:
@@ -388,8 +420,8 @@ class PreCopy(StateObject):
             disk.status = 'Copying'
             STATE.write()
 
-        def callback(disk):
-            disk.status = 'Copied'
+        def callback(disk, success):
+            disk.status = 'Copied' if success else 'Failed during copy'
             STATE.write()
 
         self._wait_for_qemus(callback)
@@ -399,15 +431,15 @@ class PreCopy(StateObject):
     def commit_overlays(self):
         "Commit all overlays to local disks."
 
-        for disk in self.disks:
+        for disk in self.disks.values():
             if disk.overlay is None:
                 raise RuntimeError('Did not get any overlay data from v2v')
 
         ndisks = len(self.disks)
         cmd_templ = ['qemu-img', 'commit']
-        for i, disk in enumerate(self.disks):
+        for i, disk in enumerate(self.disks.values()):
             logging.debug('Committing disk %d/%d', i, ndisks)
-            logfd = open(STATE.wrapper_log, 'a')
+            logfd = open(STATE.wrapper_log, 'a', buffering=1)
             cmd = cmd_templ + [disk.overlay]
             try:
                 disk.proc_qemu = subprocess.Popen(cmd,
@@ -421,8 +453,8 @@ class PreCopy(StateObject):
             disk.status = 'Committing'
             STATE.write()
 
-        def callback(disk):
-            disk.status = 'Commited'
+        def callback(disk, success):
+            disk.status = 'Commited' if success else 'Failed during commit'
             STATE.write()
             try:
                 os.remove(disk.overlay)
@@ -439,7 +471,7 @@ class PreCopy(StateObject):
         # processes
         self._stop_nbdkits()
 
-        for disk in self.disks:
+        for disk in self.disks.values():
             if disk.proc_qemu is None:
                 continue
             logging.debug('Stopping qemu-img with pid=%d', disk.proc_qemu.pid)
@@ -455,8 +487,13 @@ class PreCopy(StateObject):
                     os.remove(disk.overlay)
                 except FileNotFoundError:
                     pass
+                except Exception:
+                    error('Cannot remove temporary file "%s", subsequent '
+                          'conversions of the same hose might fail if this '
+                          'file is not removed' % disk.overlay, exception=True)
             disk.overlay = None
 
     def finish(self):
         "Finish anything that is needed after successful conversion"
-        pass
+
+        self.commit_overlays()

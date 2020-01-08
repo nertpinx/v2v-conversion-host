@@ -8,6 +8,7 @@ class TestPreCopy(unittest.TestCase):
     basic_data = {
         'output_format': 'raw',
         'vmware_uri': 'vpx://example.com',
+        'vmware_fingerprint': '',
         'vmware_password': '',
         'vmware_password_file': '',
         'vm_name': 'some-name',

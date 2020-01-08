@@ -591,7 +591,7 @@ class OSPHost(_BaseHost):
             return None
 
 
-VDSMDisk = namedtuple('VDSMDisk', ['id', 'object', 'src_key'])
+VDSMDisk = namedtuple('VDSMDisk', ['id', 'src_key'])
 VDSMDiskAttachment = namedtuple('VDSMDiskAttachment', ['disk_id',
                                                        'attachment_id'])
 
@@ -630,7 +630,7 @@ class VDSMHost(_BaseHost):
             self.sdk.types.StorageType.POSIXFS,
             )
         self._export_domain = False
-        self._vm = None
+        self._new_vm = None
         self._conversion_vm = None
         self._vm_name = None
         self._created_disks = []
@@ -650,6 +650,7 @@ class VDSMHost(_BaseHost):
                 password=str(data['rhv_password']),
                 ca_file=str(data['rhv_cafile']),
                 log=logging.getLogger(),
+                debug=data.get('rhv_debug', False),
                 insecure=insecure,
             )
             yield connection
@@ -678,7 +679,7 @@ class VDSMHost(_BaseHost):
     def _wait_for_local_disks(self, paths):
         logging.debug('Waiting for all disks to get plugged/noticed')
         wait_for_paths = paths[:]
-        endt = time.time() + TIMEOUT / 30
+        endt = time.time() + TIMEOUT
         while wait_for_paths:
             for path in wait_for_paths[:]:
                 if os.path.exists(path):
@@ -703,7 +704,8 @@ class VDSMHost(_BaseHost):
         elif data['output_format'] == 'qcow2':
             disk_format = self.sdk.types.DiskFormat.COW
 
-        for i, (disk_key, disk_data) in enumerate(STATE.pre_copy.disks):
+        disks = STATE.pre_copy.disks
+        for i, (disk_key, disk_data) in enumerate(disks.items()):
             name = '%s-%03d' % (data['vm_name'], i)
             logging.debug('Creating disk #%d: "%s"' % (i, name))
             disk = self.sdk.types.Disk(
@@ -712,23 +714,28 @@ class VDSMHost(_BaseHost):
                 format=disk_format,
                 initial_size=disk_data.size,
                 provisioned_size=disk_data.size,
-                sparse=data.allocation == 'sparse',
+                sparse=data['allocation'] == 'sparse',
                 storage_domains=[
                     self.sdk.types.StorageDomain(name=data['rhv_storage'])
                 ])
+            disk_data.status = 'Creating'
+            STATE.write()
             disk = disks_service.add(disk)
             disk = disks_service.disk_service(disk.id)
             # Adding it here so that it gets tried to be cleaned up even if
             # the timeout is reached
             d = disk.get()
-            self._created_disks.append(VDSMDisk(d.id, disk, disk_key))
+            self._created_disks.append(VDSMDisk(d.id, disk_key))
 
-        endt = time.time() + TIMEOUT / 30
+        endt = time.time() + TIMEOUT
         wait_for_disks = self._created_disks[:]
         while wait_for_disks:
             for disk in wait_for_disks[:]:
-                if disk.object.get().status == self.sdk.types.DiskStatus.OK:
+                st = disks_service.disk_service(disk.id).get().status
+                if st == self.sdk.types.DiskStatus.OK:
                     wait_for_disks.remove(disk)
+                    STATE.pre_copy.disks[disk.src_key].status = 'Created'
+                    STATE.write()
 
             if wait_for_disks:
                 if endt < time.time():
@@ -737,54 +744,54 @@ class VDSMHost(_BaseHost):
                 time.sleep(1)
 
     def _remove_disks(self, disks_service):
-        self._delete_disks(disks_service, list(self._created_disks))
+        self._delete_disks(disks_service, [d.id for d in self._created_disks])
 
     def _attach_disks(self, system_service):
         paths = []
         arguments = dict(active=True,
                          bootable=False,
                          interface=self.sdk.types.DiskInterface.VIRTIO)
-        if self._vm:
-            arguments['vm'] = self._vm
+        if self._new_vm:
+            arguments['vm'] = self._new_vm
         else:
             arguments['vm'] = self._conversion_vm
             arguments['description'] = ('Temporary attachment for pre_copy '
                                         'of VM %s' % self._vm_name)
 
-        vm_service = system_service.vms_service.vm_service(arguments['vm'].id)
-        das = vm_service.disk_attachments_service()
+        vm_svc = system_service.vms_service().vm_service(arguments['vm'].id)
+        das = vm_svc.disk_attachments_service()
 
+        vm_desc = "the new VM" if self._new_vm else "conversion VM"
+        disks_service = system_service.disks_service()
         ndisks = len(self._created_disks)
         for i, v in enumerate(self._created_disks):
-            logging.debug('Attaching disk %d/%d to conversion VM' %
-                          (i, ndisks))
+            logging.debug('Attaching disk %d/%d to %s' % (i, ndisks, vm_desc))
             kwargs = arguments.copy()
-            kwargs['disk'] = v.object.get()
-            if self._vm and i == 0:
+            kwargs['disk'] = disks_service.disk_service(v.id).get()
+            if self._new_vm and i == 0:
                 kwargs['bootable'] = True
             disk_att = das.add(self.sdk.types.DiskAttachment(**kwargs))
             self._attached_disks.append(disk_att)
-            if not self._vm:
+            if not self._new_vm:
                 local_path = '/dev/disk/by-id/virtio-%s' % disk_att.id[:20]
                 STATE.pre_copy.disks[v.src_key].local_path = local_path
                 paths.append(local_path)
 
-        if not self._vm:
+        if not self._new_vm:
             self._wait_for_local_disks(paths)
 
     def _detach_disks(self, system_service):
-        vm = self._vm or self._conversion_vm
-        vm = system_service.vms_service().vm_service(vm.id)
-        das = vm.disk_attachments_service()
-        endt = time.time() + TIMEOUT / 30
-        while len(self._attached_disks) > 0:
+        vm = self._new_vm or self._conversion_vm
+        vms = system_service.vms_service().vm_service(vm.id)
+        das = vms.disk_attachments_service()
+        for _ in range(2):  # TODO: asdf: figure out number of repetitions
             for att in self._attached_disks[:]:
                 try:
                     da = das.attachment_service(att.id)
                     logging.debug('Trying to detach disk attachment '
                                   'id=%s' % att.id)
                     da.remove()
-                    del self._attached_disks[att]
+                    self._attached_disks.remove(att)
                 except self.sdk.NotFoundError:
                     logging.info('Attachment id=%s does not exist (already '
                                  'removed?), skipping it',
@@ -793,20 +800,22 @@ class VDSMHost(_BaseHost):
                 except self.sdk.Error:
                     logging.exception('Failed to remove attachment id=%s',
                                       att.id)
+                    STATE.started = "LOL, UZ!"
+                    STATE.write()
+                    time.sleep(300)
 
-            # Avoid checking timeouts, and waiting, if there are no
-            # more attachments to remove
-            if len(self._attached_disks) > 0:
-                if time.time() > endt:
-                    logging.error('Timed out waiting for attachments: %s',
-                                  self._attached_disks)
-                    break
-                time.sleep(1)
+            if len(self._attached_disks) == 0:
+                break
+            time.sleep(1)  # TODO: asdf: Figure out proper time, maybe 5s
+
+        if len(self._attached_disks) > 0:
+            STATE.failed = True
+            error('Timed out waiting for attachments: %s' %
+                  self._attached_disks)
 
     def _remove_vm(self, system_service):
-        if not self._vm:
-            return
-        system_service.vms_service(self._vm.id).remove()
+        if STATE.vm_id:
+            system_service.vms_service().vm_service(STATE.vm_id).remove()
 
     def prepare_disks(self, data):
         with self.sdk_connection(data) as conn:
@@ -825,23 +834,20 @@ class VDSMHost(_BaseHost):
             else:
                 self._handle_simple_cleanup(system_service, data)
 
-    def handle_finish(self, data, vm_name):
+    def handle_finish(self, data):
         if data['two_phase']:
             with self.sdk_connection(data) as conn:
                 system_service = conn.system_service()
+                vms_service = system_service.vms_service()
                 self._detach_disks(system_service)
-                self._vm = self._get_vm(system_service, vm_name)
-                if not self._vm:
-                    raise RuntimeError('Cannot find new VM with '
-                                       'name "%s"' % vm_name)
+                self._new_vm = vms_service.vm_service(STATE.vm_id).get()
                 self._attach_disks(system_service)
 
         return True
 
     def _handle_twophase_cleanup(self, system_service, data):
         disks_service = system_service.disks_service()
-        self._vm = self._get_vm(system_service, self._vm_name)
-        self._detach_disks(disks_service)
+        self._detach_disks(system_service)
         self._remove_vm(system_service)
         self._remove_disks(disks_service)
 
@@ -872,26 +878,25 @@ class VDSMHost(_BaseHost):
         endt = time.time() + TIMEOUT
         while len(disk_ids) > 0:
             for disk_id in disk_ids[:]:
+                disk_service = disks_service.disk_service(str(disk_id))
+                disk = disk_service.get()
+                if disk.status != self.sdk.types.DiskStatus.OK:
+                    continue
+                logging.info('Removing disk id=%s', disk_id)
                 try:
-                    disk_service = disks_service.disk_service(str(disk_id))
-                    disk = disk_service.get()
-                    if disk.status != self.sdk.types.DiskStatus.OK:
-                        continue
-                    logging.info('Removing disk id=%s', disk_id)
                     disk_service.remove()
-                    disk_ids.remove(disk_id)
                 except self.sdk.NotFoundError:
                     logging.info('Disk id=%s does not exist (already '
                                  'removed?), skipping it',
                                  disk_id)
-                    disk_ids.remove(disk_id)
                 except self.sdk.Error:
                     logging.exception('Failed to remove disk id=%s',
                                       disk_id)
+                disk_ids.remove(disk_id)
             # Avoid checking timeouts, and waiting, if there are no
             # more disks to remove
             if len(disk_ids) > 0:
-                if time.time() > endt:
+                if endt < time.time():
                     logging.error('Timed out waiting for disks: %r',
                                   disk_ids)
                     break
@@ -935,13 +940,20 @@ class VDSMHost(_BaseHost):
         logging.info("virtio_win (re)defined as: %s", data['virtio_win'])
 
     def prepare_command(self, data, v2v_args, v2v_env, v2v_caps):
+        output_format = data['output_format']
+        allocation = data.get('allocation')
+
+        if STATE.pre_copy is not None:
+            output_format = 'raw'
+            allocation = 'sparse'
+
         v2v_args.extend([
             '--bridge', 'ovirtmgmt',
-            '-of', data['output_format'],
+            '-of', output_format,
             ])
-        if 'allocation' in data:
+        if allocation is not None:
             v2v_args.extend([
-                '-oa', data['allocation']
+                '-oa', allocation
                 ])
 
         if 'rhv_url' in data:
@@ -958,6 +970,9 @@ class VDSMHost(_BaseHost):
                 v2v_args.extend(['-oo', 'rhv-verifypeer=%s' %
                                 ('false' if data['insecure_connection'] else
                                  'true')])
+            if STATE.pre_copy is not None:
+                for disk in self._created_disks:
+                    v2v_args.extend(['-oo', 'rhv-disk-uuid=' + disk.id])
         elif 'export_domain' in data:
             v2v_args.extend([
                 '-o', 'rhv',
@@ -1059,10 +1074,11 @@ class VDSMHost(_BaseHost):
                 # least fail early if the machine does not exist or if it is
                 # not up.
                 if data['two_phase']:
-                    service = c.system_service().vms_service()
-                    vm = service.vm_service(str(data['conversion_vm_id']))
+                    vm_svc = c.system_service().vms_service()
                     try:
-                        if vm.get().status != self.sdk.types.VmStatus.UP:
+                        vm = vm_svc.vm_service(str(data['conversion_vm_id']))
+                        vm = vm.get()
+                        if vm.status != self.sdk.types.VmStatus.UP:
                             hard_error('VM %s is not running,\n'
                                        'how can this script be running on '
                                        'a machine that is not up?' %

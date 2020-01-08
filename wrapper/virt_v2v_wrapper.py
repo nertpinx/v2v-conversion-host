@@ -92,24 +92,33 @@ def daemonize():
 def prepare_command(data, v2v_caps, agent_sock=None):
     v2v_args = [
         '-v', '-x',
-        data['vm_name'],
         '--root', 'first',
         '--machine-readable=file:{}'.format(STATE.machine_readable_log),
     ]
 
-    if data['transport_method'] == 'vddk':
+    if STATE.pre_copy:
         v2v_args.extend([
-            '-i', 'libvirt',
-            '-ic', data['vmware_uri'],
-            '-it', 'vddk',
-            '-io', 'vddk-libdir=%s' % VDDK_LIBDIR,
-            '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
-            '--password-file', data['vmware_password_file'],
+            STATE.pre_copy.get_xml(),
+            '-i', 'libvirtxml',
+            # TODO: Remove later when v2v has support for direct commit
+            '--debug-overlays',
+            '--no-copy',
+        ])
+    else:
+        v2v_args.append(data['vm_name'])
+        if data['transport_method'] == 'vddk':
+            v2v_args.extend([
+                '-i', 'libvirt',
+                '-ic', data['vmware_uri'],
+                '-it', 'vddk',
+                '-io', 'vddk-libdir=%s' % VDDK_LIBDIR,
+                '-io', 'vddk-thumbprint=%s' % data['vmware_fingerprint'],
+                '--password-file', data['vmware_password_file'],
             ])
-    elif data['transport_method'] == 'ssh':
-        v2v_args.extend([
-            '-i', 'vmx',
-            '-it', 'ssh',
+        elif data['transport_method'] == 'ssh':
+            v2v_args.extend([
+                '-i', 'vmx',
+                '-it', 'ssh',
             ])
 
     if 'network_mappings' in data:
@@ -477,7 +486,7 @@ def main():
                 raise RuntimeError('Failed to start ssh-agent')
         if STATE.pre_copy:
             host.prepare_disks(data)
-            STATE.pre_copy.copy_disks(data)
+            STATE.pre_copy.copy_disks(data['vmware_password_file'])
         if not STATE.failed:
             wrapper(host, data, virt_v2v_caps, agent_sock)
         if agent_pid is not None:
@@ -545,6 +554,9 @@ def validate_data(host, data):
         host.check_install_drivers(data)
     else:
         data['install_drivers'] = False
+
+    if 'two_phase' not in data:
+        data['two_phase'] = False
 
     if data['two_phase'] and not data['install_drivers'] and not 'asdf':
         hard_error('Two phase conversion requires VirtI/O drivers')
