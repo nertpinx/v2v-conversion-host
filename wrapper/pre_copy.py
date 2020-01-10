@@ -28,7 +28,7 @@ NBD_MIN_VERSION = version.parse("1.0.0")
 NBD_AIO_MAX_IN_FLIGHT = 4
 
 MAX_BLOCK_STATUS_LEN = 2 << 30  # 2GB (4GB requests fail over the 32b protocol)
-MAX_PREAD_LEN = 16 << 20        # 23MB (24M requests fail in vddk)
+MAX_PREAD_LEN = 23 << 20        # 23MB (24M requests fail in vddk)
 
 
 BlockStatusData = namedtuple('BlockStatusData', ['offset', 'length', 'flags'])
@@ -41,7 +41,12 @@ def get_block_status(nbd_handle, size):
         if metacontext != 'base:allocation':
             return
         for length, flags in zip(extents[::2], extents[1::2]):
-            blocks.append(BlockStatusData(offset, length, flags))
+            if (len(blocks) > 0 and
+                blocks[-1].flags == flags and
+                blocks[-1].offset + blocks[-1].length == offset):
+                blocks[-1].length += length
+            else:
+                blocks.append(BlockStatusData(offset, length, flags))
             offset += length
 
     last_offset = 0
