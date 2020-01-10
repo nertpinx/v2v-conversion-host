@@ -25,6 +25,8 @@ setup(
         'pycurl',
         'six',
         'pyvmomi',
+        'packaging',
+        'libnbd',
     ],
     extras_require={
         'ovirt': 'ovirt-engine-sdk-python',

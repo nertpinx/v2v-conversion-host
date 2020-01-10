@@ -3,6 +3,7 @@
 import os
 import libvirt
 import logging
+import nbd
 import six
 import stat
 import subprocess
@@ -10,7 +11,8 @@ import tempfile
 import time
 import xml.etree.ElementTree as ETree
 
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
+from packaging import version
 from six.moves.urllib.parse import urlparse, unquote, parse_qs
 from pyVim.connect import SmartConnect, SmartConnectNoSSL, Disconnect
 from pyVmomi import vim  # pylint: disable=no-name-in-module; dynamic module
@@ -21,8 +23,43 @@ from .common import add_perms_to_file, nbd_uri_from_unix_socket
 
 
 _TIMEOUT = 10
-# TODO: [py2] Remove the line and use DEVNULL from subprocess directly
-_DEVNULL = getattr(subprocess, 'DEVNULL', open(os.devnull, 'r+'))
+
+NBD_MIN_VERSION = version.parse("1.0.0")
+NBD_AIO_MAX_IN_FLIGHT = 4
+
+MAX_BLOCK_STATUS_LEN = 2 << 30  # 2GB (4GB requests fail over the 32b protocol)
+MAX_PREAD_LEN = 16 << 20        # 23MB (24M requests fail in vddk)
+
+
+BlockStatusData = namedtuple('BlockStatusData', ['offset', 'length', 'flags'])
+
+
+def get_block_status(nbd_handle, size):
+    blocks = []
+
+    def update_blocks(metacontext, offset, extents, err):
+        if metacontext != 'base:allocation':
+            return
+        for length, flags in zip(extents[::2], extents[1::2]):
+            blocks.append(BlockStatusData(offset, length, flags))
+            offset += length
+
+    last_offset = 0
+    while last_offset < size:
+        nblocks = len(blocks)
+        missing_length = size - last_offset
+        length = min(missing_length, MAX_BLOCK_STATUS_LEN)
+
+        logging.debug('Calling block_status with length=%d offset=%d' %
+                      (length, last_offset))
+
+        nbd_handle.block_status(length, last_offset, update_blocks)
+        if nblocks == len(blocks):
+            raise ValueError('Missing block status data from NBD')
+
+        last_offset = blocks[-1].offset + blocks[-1].length
+
+    return blocks
 
 
 class _VMWare(object):
@@ -147,6 +184,7 @@ class _VMWare(object):
 class _PreCopyDisk(StateObject):
     __slots__ = [
         'change_ids',  # List of ChangeIDs from VMWare
+        'copied',
         'key',  # Key on the VMWare server
         'label',  # Label for nicer user reporting
         'local_path',  # Path on local filesystem
@@ -158,6 +196,7 @@ class _PreCopyDisk(StateObject):
         'size',  # in Bytes
         'sock',  # nbdkit's unix socket path
         'status',  # Any string for user-reporting
+        'to_copy',
         'vmware_object',  # Disk object returned by pyvmomi
     ]
 
@@ -183,12 +222,113 @@ class _PreCopyDisk(StateObject):
         self.status = 'Prepared'
         self.key = disk.key
         self.vmware_object = disk
+        self.logname = '%s(key=%s)' % (self.label, self.key)
 
         self.sock = os.path.join(tmp_dir, 'nbdkit-%s.sock' % self.key)
         self.pidfile = os.path.join(tmp_dir, 'nbdkit-%s.pid' % self.key)
         self.proc_nbdkit = None
         self.proc_qemu = None
         self.overlay = None
+
+        self.copied = None
+        self.to_copy = None
+
+    def copy(self):
+        self.status = 'Copying (connecting)'
+        STATE.write()
+
+        nbd_handle = nbd.NBD()
+        nbd_handle.add_meta_context("base:allocation")
+        nbd_handle.connect_uri(nbd_uri_from_unix_socket(self.sock))
+        fd = os.open(self.local_path, os.O_WRONLY)
+
+        try:
+            self._copy_all(nbd_handle, fd)
+        except Exception:
+            self.status = 'Failed during copy'
+            STATE.write()
+            os.close(fd)
+            nbd_handle.shutdown()
+            raise
+
+        self.status = 'Copied'
+        STATE.write()
+
+    def _copy_all(self, nbd_handle, fd):
+        # This is called back when nbd_aio_pread completes.
+        def _read_completed(fd, buf, offset, err):
+            logging.debug('Writing %d B to offset %d B' % (buf.size(), offset))
+            os.pwrite(fd, buf.to_bytearray(), offset)
+            # By returning 1 here we auto-retire the aio_pread command.
+            return 1
+
+        # Process any AIO requests without blocking.
+        def _process_aio_requests(nbd_handle):
+            while nbd_handle.poll(0) == 1:
+                pass
+
+        # Wait until there's less AIO commands on the handle.
+        def _process_some_requests(nbd_handle):
+            while nbd_handle.aio_in_flight() > NBD_AIO_MAX_IN_FLIGHT:
+                nbd_handle.poll(1)
+
+        # Block until all AIO commands on the handle have finished.
+        def _wait_for_aio_commands_to_finish(nbd_handle):
+            while nbd_handle.aio_in_flight() > 0:
+                nbd_handle.poll(-1)
+
+        logging.debug('Getting block info for disk: %s' % self.logname)
+        self.status = 'Copying (getting block stats)'
+        STATE.write()
+
+        # TODO: asdf: use extents! or not?
+        blocks = get_block_status(nbd_handle, self.size)
+        data_blocks = [x for x in blocks if not x.flags & nbd.STATE_HOLE]
+
+        logging.debug('Block status filtered down to %d data blocks' %
+                      len(data_blocks))
+        if len(data_blocks) == 0:
+            logging.debug('No extents have allocated data for disk: %s' %
+                          (self.logname()))
+            return
+
+        self.copied = 0
+        self.to_copy = sum([block.length for block in data_blocks])
+        self.status = 'Copying'
+        STATE.write()
+
+        logging.debug('Copying %d B of data' % self.to_copy)
+
+        for block in data_blocks:
+            if block.flags & nbd.STATE_ZERO:
+                # Optimize for memory usage, maybe?
+                os.pwrite(fd, [0] * block.length, block.offset)
+            else:
+                count = 0
+                while count < block.length:
+                    _process_some_requests(nbd_handle)
+
+                    length = min(block.length - count, MAX_PREAD_LEN)
+                    offset = block.offset + count
+
+                    buf = nbd.Buffer(length)
+                    nbd_handle.aio_pread(buf, offset,
+                                         lambda e, f=fd, b=buf, o=offset:
+                                         _read_completed(f, b, o, e))
+                    count += length
+
+                    _process_aio_requests(nbd_handle)
+
+            self.copied += block.length
+            STATE.write()
+
+        _wait_for_aio_commands_to_finish(nbd_handle)
+
+        if self.copied == 0:
+            logging.debug('Nothing to copy for disk: %s' % self.logname)
+        else:
+            logging.debug('Copied %d B for disk: %s' %
+                          (self.copied, self.logname))
 
 
 class PreCopy(StateObject):
@@ -214,6 +354,11 @@ class PreCopy(StateObject):
     def __new__(cls, data):
         if not data.get('two_phase', False):
             return None
+        nbd_version = version.parse(nbd.NBD().get_version())
+        if nbd_version < NBD_MIN_VERSION:
+            raise RuntimeError('libnbd is too old (%s), '
+                               'minimum version required is %s' %
+                               (nbd_version, NBD_MIN_VERSION))
         return super(PreCopy, cls).__new__(cls)
 
     def __init__(self, data):
@@ -301,16 +446,10 @@ class PreCopy(StateObject):
             f.write(self._fix_disks(self.vmware.get_domxml()))
         return xmlfile
 
-    def _get_nbdkit_cmd(self, disk, vmware_password_file):
+    def _get_nbdkit_cmd(self, disk, vmware_password_file, filters):
         env = 'LD_LIBRARY_PATH=%s' % VDDK_LIBRARY_PATH
         if 'LD_LIBRARY_PATH' in os.environ:
             env += ':' + os.environ['LD_LIBRARY_PATH']
-
-        print('Starting nbdkit for disk {}'.format(disk))
-        print(os.stat(os.path.dirname(disk.sock)))
-        print(os.stat(os.path.dirname(disk.pidfile)))
-        print(os.stat(vmware_password_file))
-        print(os.stat(VDDK_LIBDIR))
 
         nbdkit_cmd = [
             'env',
@@ -323,9 +462,10 @@ class PreCopy(StateObject):
             '--readonly',
             '--foreground',
             '--exportname=/',
+        ] + [
+            '--filter=' + f for f in filters
+        ] + [
             '--filter=log',
-            '--filter=cacheextents',  # asdf: Only enable if available?
-            '--filter=retry',  # asdf: Only enable if available?
             'vddk',
             # pylint: disable=protected-access
             'vm=moref=%s' % self.vmware.get_vm()._moId,
@@ -343,14 +483,31 @@ class PreCopy(StateObject):
 
     def _start_nbdkits(self, vmware_password_file):
         paths = []
+        filters = ['cacheextents', 'retry']
+
+        for filt in filters:
+            try:
+                if subprocess.run(['nbdkit',
+                                   '--dump-plugin',
+                                   '--filter=' + filt,
+                                   'null'],
+                                  stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL,
+                                  timeout=5).returncode == 0:
+                    continue
+            except subprocess.TimeoutExpired:
+                filters.remove(filt)
+
         for disk in self.disks.values():
-            cmd = self._get_nbdkit_cmd(disk, vmware_password_file)
-            logfd = open(STATE.wrapper_log, 'a', buffering=1)
+            cmd = self._get_nbdkit_cmd(disk, vmware_password_file, filters)
+            # asdf: logfd = open(STATE.wrapper_log, 'a', buffering=1)
             logging.debug('Starting nbdkit: %s', cmd)
             disk.proc_nbdkit = subprocess.Popen(cmd,
-                                                stdout=_DEVNULL, # asdf
+                                                # asdf
+                                                stdout=subprocess.DEVNULL,
                                                 stderr=subprocess.STDOUT,
-                                                stdin=_DEVNULL)
+                                                stdin=subprocess.DEVNULL)
             paths.append((disk.pidfile, disk.sock))
 
         logging.debug('Waiting for all nbdkit processes to initialize')
@@ -400,31 +557,9 @@ class PreCopy(StateObject):
         self._start_nbdkits(vmware_password_file)
 
         ndisks = len(self.disks)
-        cmd_templ = ['qemu-img', 'convert', '-f', 'raw',
-                     '-O', 'raw']
         for i, disk in enumerate(self.disks.values()):
             logging.debug('Copying disk %d/%d', i, ndisks)
-            # TODO: ditch qemu-img
-            logfd = open(STATE.wrapper_log, 'a', buffering=1)
-            socket_uri = nbd_uri_from_unix_socket(disk.sock)
-            cmd = cmd_templ + [socket_uri, disk.local_path]
-            try:
-                disk.proc_qemu = subprocess.Popen(cmd,
-                                                  stdout=logfd,
-                                                  stderr=subprocess.STDOUT,
-                                                  stdin=_DEVNULL,
-                                                  universal_newlines=True)
-            except subprocess.CalledProcessError as e:
-                error('qemu-img failed with: %s' % e.output, exception=True)
-                raise
-            disk.status = 'Copying'
-            STATE.write()
-
-        def callback(disk, success):
-            disk.status = 'Copied' if success else 'Failed during copy'
-            STATE.write()
-
-        self._wait_for_qemus(callback)
+            disk.copy()
 
         self._stop_nbdkits()
 
@@ -445,7 +580,7 @@ class PreCopy(StateObject):
                 disk.proc_qemu = subprocess.Popen(cmd,
                                                   stdout=logfd,
                                                   stderr=subprocess.STDOUT,
-                                                  stdin=_DEVNULL,
+                                                  stdin=subprocess.DEVNULL,
                                                   universal_newlines=True)
             except subprocess.CalledProcessError as e:
                 error('qemu-img failed with: %s' % e.output, exception=True)

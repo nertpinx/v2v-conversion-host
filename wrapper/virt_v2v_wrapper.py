@@ -491,10 +491,20 @@ def main():
             wrapper(host, data, virt_v2v_caps, agent_sock)
         if agent_pid is not None:
             os.kill(agent_pid, signal.SIGTERM)
+
         if not STATE.failed:
             if STATE.pre_copy:
                 STATE.pre_copy.finish()
             STATE.failed = not host.handle_finish(data)
+        else:
+            STATE.started = "Asdf!"
+            while True:
+                try:
+                    os.stat('/tmp/asdf')
+                    break
+                except FileNotFoundError:
+                    time.sleep(10)
+
     except Exception as e:
         error_name = e.args[0] if e.args else "Wrapper failure"
         error(error_name, 'An error occured, finishing state file...',
