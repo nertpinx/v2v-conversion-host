@@ -1035,8 +1035,8 @@ class VDSMHost(_BaseHost):
             if 'rhv_url' not in data:
                 hard_error('Two-phase conversion is '
                            'only supported with "rhv_url"')
-            if 'conversion_vm_id' not in data:
-                hard_error('Missing argument "conversion_vm_id" required for '
+            if 'conversion_host_uuid' not in data:
+                hard_error('Missing argument "conversion_host_uuid" required for '
                            'two phase conversion')
 
         # Insecure connection
@@ -1069,25 +1069,25 @@ class VDSMHost(_BaseHost):
                                  data['allocation'])
 
                 # We cannot reliably check that we are running on a VM with the
-                # specified UUID in `conversion_vm_id` (otherwise we would not
+                # specified UUID in `conversion_host_uuid` (otherwise we would not
                 # need the ID in the input in the first place), but we can at
                 # least fail early if the machine does not exist or if it is
                 # not up.
                 if data['two_phase']:
                     vm_svc = c.system_service().vms_service()
                     try:
-                        vm = vm_svc.vm_service(str(data['conversion_vm_id']))
+                        vm = vm_svc.vm_service(str(data['conversion_host_uuid']))
                         vm = vm.get()
                         if vm.status != self.sdk.types.VmStatus.UP:
                             hard_error('VM %s is not running,\n'
                                        'how can this script be running on '
                                        'a machine that is not up?' %
-                                       data['conversion_vm_id'])
+                                       data['conversion_host_uuid'])
                     except self.sdk.NotFoundError:
                         hard_error('VM %s not found,\n'
                                    'how can this script be running on a '
                                    'machine that does not exist?' %
-                                   data['conversion_vm_id'])
+                                   data['conversion_host_uuid'])
                     self._conversion_vm = vm
 
         self._vm_name = data['vm_name']
