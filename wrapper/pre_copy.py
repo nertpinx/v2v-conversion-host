@@ -41,10 +41,11 @@ def get_block_status(nbd_handle, size):
         if metacontext != 'base:allocation':
             return
         for length, flags in zip(extents[::2], extents[1::2]):
-            if (len(blocks) > 0 and
-                blocks[-1].flags == flags and
-                blocks[-1].offset + blocks[-1].length == offset):
-                blocks[-1].length += length
+            lb = blocks[-1] if blocks else None
+            if lb and lb.flags == flags and lb.offset + lb.length == offset:
+                blocks[-1] = BlockStatusData(lb.offset,
+                                             lb.length + length,
+                                             flags)
             else:
                 blocks.append(BlockStatusData(offset, length, flags))
             offset += length
